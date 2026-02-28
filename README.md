@@ -39,7 +39,7 @@ The orchestrator (your session) coordinates via short status messages — it nev
 ## Install
 
 ```bash
-git clone https://github.com/timkraus/tim-loop.git
+git clone https://github.com/totally-tim/tim-loop.git
 cd tim-loop
 ./install.sh
 ```
