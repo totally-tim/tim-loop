@@ -5,7 +5,7 @@ An automated build-verify-review development loop for [Claude Code](https://docs
 Takes a feature spec, builds it with TDD in an isolated worktree, verifies independently, publishes a PR, and reviews it — repeating until the reviewer passes or max cycles are exhausted.
 
 ```
-/tim-spec "add webhook retry logic"  -->  brainstorm + structured spec
+/tim-spec add webhook retry logic  -->  brainstorm + structured spec
 /tim-loop docs/specs/2026-02-28-webhook-retries.md  -->  automated loop --> PR ready
 ```
 
@@ -69,7 +69,7 @@ Start a new Claude Code session — `/tim-spec` and `/tim-loop` will appear in a
 ### 1. Generate a spec
 
 ```
-/tim-spec "add rate limiting to the API"
+/tim-spec add rate limiting to the API
 ```
 
 Walks you through brainstorming, then outputs a structured spec to `docs/specs/`.
