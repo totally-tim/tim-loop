@@ -56,6 +56,38 @@ cp commands/tim-spec.md ~/.claude/commands/
 
 Start a new Claude Code session — `/tim-spec` and `/tim-loop` will appear in autocomplete.
 
+## Permissions
+
+Tim Loop spawns 3 agents that make many tool calls (file edits, test runs, git commands, `gh` CLI). In the default permission mode, **each tool call requires manual approval** — this creates significant friction during the automated loop.
+
+**Easiest approach:** Run Claude Code with `--dangerously-skip-permissions` (or your alias for it). Teammates inherit the lead's permission mode, so all agents will run fully autonomously. Since Tim Loop already works in an isolated git worktree, the blast radius is contained to a throwaway branch.
+
+```bash
+claude --dangerously-skip-permissions
+# then: /tim-loop docs/specs/your-feature.md
+```
+
+**Use caution.** Bypassing permissions means agents can execute any command without asking. Only do this when you trust the spec and are comfortable with automated git operations on your repo. Review the generated PR carefully before merging.
+
+**Safer alternative:** Pre-approve common operations in `~/.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(git *)",
+      "Bash(pnpm *)",
+      "Bash(npm *)",
+      "Bash(tsc *)",
+      "Bash(gh pr *)",
+      "Bash(playwright-cli *)",
+      "Edit(*)",
+      "Write(*)"
+    ]
+  }
+}
+```
+
 ## Prerequisites
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) installed
