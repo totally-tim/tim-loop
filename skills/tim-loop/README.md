@@ -9,58 +9,56 @@ You write a spec  -->  Worktree created  -->  3 agents work in a loop  -->  PR r
 ```
 
 **The loop:**
-1. **BUILD** — Builder agent implements the spec using strict TDD
-2. **VERIFY** — Independent verifier runs typecheck, lint, tests, build, e2e, plan adherence
-3. **FIX** — If verify fails, builder fixes and re-verifies (up to 5 retries)
-4. **PUBLISH** — Code committed, pushed, PR created/updated
-5. **REVIEW** — Reviewer reads PR diff via GitHub CLI, checks against spec
-6. If review fails, findings go back to builder for the next cycle (up to 3 cycles)
+1. **BASELINE** — Verifier records pre-existing failures before the builder starts
+2. **PLAN** — Builder studies the codebase and submits a build plan for approval (cycle 1)
+3. **BUILD** — Builder creates prioritized sub-tasks and implements with strict TDD
+4. **VERIFY** — Independent verifier runs checks, compares against baseline, reports failure_keys
+5. **FIX** — If verify fails, builder fixes. Stagnation detection aborts after 3 identical failures
+6. **PUBLISH** — Code committed, pushed, PR created/updated with priority checklist
+7. **REVIEW** — Reviewer checks PR diff against spec with priority-aware coverage tracking
+8. If review fails, findings go back to builder for the next cycle
 
 **Three agents, each with a single job:**
-- **Builder** — writes code and tests (TDD), commits
-- **Verifier** — runs all checks independently, can't edit code
-- **Reviewer** — reviews PR diff only via `gh` CLI, can't touch local files
+- **Builder** — writes code and tests (TDD), creates sub-tasks, commits
+- **Verifier** — runs all checks independently, can't edit code, reports structured failure_keys
+- **Reviewer** — reviews PR diff via `gh` CLI, can request screenshots from verifier
 
-The orchestrator (your session) coordinates but never reads code or runs tests — keeping its context window clean enough to survive the full loop.
+The orchestrator coordinates via a shared task list (`Ctrl+T` to see progress) — it never reads code or runs tests.
+
+## Key Features (v2)
+
+- **Task-driven coordination** — agents use TaskCreate/TaskUpdate instead of message-passing. Progress visible to the user in real time via `Ctrl+T`.
+- **Baseline verification** — pre-existing failures are recorded before building, preventing false negatives.
+- **Plan approval** — on cycle 1, the builder submits a build plan for orchestrator review before coding.
+- **Priority-based requirements** — `[P0]`/`[P1]`/`[P2]` tags determine build order and review strictness.
+- **Granular sub-tasks** — builder breaks work into 5-6 sub-tasks for fine-grained progress tracking.
+- **Incremental verification** — on retry, previously-failed checks run first before the full suite.
+- **Stagnation detection** — 3 identical failure_key sets in a row triggers an abort instead of wasting retries.
+- **Configurable loop** — spec can override `max_outer_cycles`, `max_inner_retries`, `require_plan_approval`, `skip_baseline`.
+- **Abort and resume** — on abort, state is saved to `.tim-loop-resume.json` for later continuation.
+- **Visual review** — reviewer can request screenshots from the verifier for UI changes.
 
 ## Installation
 
-### 1. Copy the skill files
-
 ```bash
-# Copy both skill directories
-cp -r /path/to/source/.claude/skills/tim-loop ~/.claude/skills/tim-loop
-cp -r /path/to/source/.claude/skills/tim-spec ~/.claude/skills/tim-spec
-
-# Copy the command wrappers
-cp /path/to/source/.claude/commands/tim-loop.md ~/.claude/commands/tim-loop.md
-cp /path/to/source/.claude/commands/tim-spec.md ~/.claude/commands/tim-spec.md
+git clone https://github.com/totally-tim/tim-loop.git
+cd tim-loop
+./install.sh
 ```
 
-Or if cloning from a shared location:
+Or manually:
 
 ```bash
 mkdir -p ~/.claude/skills ~/.claude/commands
-
-# From Tim's machine or a shared repo
-rsync -av tim@host:~/.claude/skills/tim-loop/ ~/.claude/skills/tim-loop/
-rsync -av tim@host:~/.claude/skills/tim-spec/ ~/.claude/skills/tim-spec/
-rsync -av tim@host:~/.claude/commands/tim-loop.md ~/.claude/commands/tim-loop.md
-rsync -av tim@host:~/.claude/commands/tim-spec.md ~/.claude/commands/tim-spec.md
+cp -r skills/tim-loop ~/.claude/skills/
+cp -r skills/tim-spec ~/.claude/skills/
+cp commands/tim-loop.md ~/.claude/commands/
+cp commands/tim-spec.md ~/.claude/commands/
 ```
 
-### 2. Verify installation
+Start a new Claude Code session — `/tim-spec` and `/tim-loop` will appear in autocomplete.
 
-Start a new Claude Code session and check that both skills appear:
-
-```
-/tim-spec    # should show in autocomplete
-/tim-loop    # should show in autocomplete
-```
-
-### 3. Prerequisites
-
-These should already be available if you use Claude Code with superpowers:
+### Prerequisites
 
 - **superpowers** plugin installed (provides TDD, code-review, worktree, and other skills)
 - **playwright-cli** skill at `~/.claude/skills/playwright-cli/` (for browser verification)
@@ -76,7 +74,7 @@ These should already be available if you use Claude Code with superpowers:
 │   ├── tim-builder.md     # Builder agent prompt + reference
 │   ├── tim-verifier.md    # Verifier agent prompt + reference
 │   ├── tim-reviewer.md    # Reviewer agent prompt + reference
-│   └── tim-verify.md      # 3-tier verification strategy
+│   ├── tim-verify.md      # 3-tier verification strategy
 │   └── README.md          # This file
 ├── tim-spec/
 │   └── SKILL.md           # Spec generation skill
@@ -91,10 +89,10 @@ These should already be available if you use Claude Code with superpowers:
 ### Generate a spec
 
 ```
-/tim-spec "add webhook retry logic with exponential backoff"
+/tim-spec add webhook retry logic with exponential backoff
 ```
 
-This walks you through brainstorming the feature, then generates a structured spec at `docs/specs/YYYY-MM-DD-<feature>.md`.
+This walks you through brainstorming, explores the codebase for architecture context, then generates a structured spec at `docs/specs/YYYY-MM-DD-<feature>.md` with prioritized requirements, test strategy, and risk assessment.
 
 ### Run the loop
 
@@ -102,18 +100,27 @@ This walks you through brainstorming the feature, then generates a structured sp
 /tim-loop docs/specs/2026-02-28-webhook-retries.md
 ```
 
-This creates a worktree, spawns the team, and runs the build-verify-review loop automatically. You'll see progress updates like:
+Progress updates show in your terminal and the task list (`Ctrl+T`):
 
 ```
-Cycle 1/3: Build complete. Starting verify...
+Cycle 1/3: Plan approved. Builder creating sub-tasks...
+Cycle 1/3: Build complete (6/6 sub-tasks done). Starting verify...
 Cycle 1/3: Verify FAIL (attempt 2/5, FIXABLE). Builder fixing...
 Cycle 1/3: Verify PASS. Publishing PR...
 Cycle 1/3: Review PASS. PR #47 ready for human review.
 ```
 
+### Resume after abort
+
+If the loop aborts, it saves state for later:
+
+```
+/tim-loop --resume /path/to/worktree/.tim-loop-resume.json
+```
+
 ### Writing specs manually
 
-If you prefer to write the spec yourself instead of using `/tim-spec`, follow this format:
+If you prefer to write the spec yourself instead of using `/tim-spec`:
 
 ```markdown
 # Feature: <name>
@@ -122,15 +129,24 @@ If you prefer to write the spec yourself instead of using `/tim-spec`, follow th
 One sentence.
 
 ## Requirements
-- [ ] Requirement 1
-- [ ] Requirement 2
+- [ ] [P0] Critical requirement
+- [ ] [P1] Important requirement
+- [ ] [P2] Nice-to-have requirement
 
 ## Architecture
-How it fits into the codebase.
+How it fits into the codebase. Specific file paths and patterns.
 
 ## Acceptance Criteria
 - When X, then Y
 - API returns Z
+
+## Test Strategy
+- Unit tests for: [modules]
+- Mocks: [external services]
+
+## Risk Assessment
+- Blast radius: greenfield
+- Risk level: low
 
 ## Verification (optional)
 - Run `specific-command` and expect X
@@ -140,21 +156,25 @@ How it fits into the codebase.
 - What this does NOT include
 ```
 
-The only required sections are **Goal**, **Requirements**, and **Acceptance Criteria**.
+Required sections: **Goal**, **Requirements** (with priority tags), and **Acceptance Criteria**.
 
 ## Configuration
 
-Hardcoded defaults (edit `~/.claude/skills/tim-loop/SKILL.md` to change):
+Defaults are overridable per-spec via the `## Loop Config` section:
 
-| Setting | Default |
-|---------|---------|
-| Outer cycles (build-review) | 3 |
-| Inner retries (verify-fix) | 5 |
-| TDD enforcement | Strict |
-| Worktree isolation | Always |
+| Setting | Default | Spec Override |
+|---------|---------|---------------|
+| Outer cycles | 3 | `max_outer_cycles: N` |
+| Inner retries | 5 | `max_inner_retries: N` |
+| Plan approval (cycle 1) | true | `require_plan_approval: false` |
+| Baseline verification | true | `skip_baseline: true` |
+| TDD enforcement | Strict | Not configurable |
+| Worktree isolation | Always | Not configurable |
 
 ## How It Stays Lean
 
-The orchestrator follows a "thin coordinator" pattern — it only tracks cycle numbers, verdicts, and prognoses. All code reading, test running, and diff analysis happens in the agents. This keeps the main context window clean enough to survive the full 3-cycle loop without compaction.
+The orchestrator follows a "thin coordinator" pattern — it creates tasks, reads task metadata (verdicts, failure_keys, prognoses), and makes decisions. All code reading, test running, and diff analysis happens in the agents.
 
-Agent prompts use an "Iron Laws + Progressive Disclosure" pattern: 5 critical rules in the spawn prompt (reliably followed), with detailed process guidance in reference files that agents read on their first turn.
+Agent prompts use an "Iron Laws + Progressive Disclosure" pattern: 5-6 critical rules in the spawn prompt (reliably followed), with detailed process guidance in reference files that agents read on their first turn.
+
+Task-driven coordination means the orchestrator doesn't need to parse agent messages for verdicts — structured metadata on completed tasks provides clean, reliable signals for loop decisions.

@@ -12,29 +12,32 @@ Takes a feature spec, builds it with TDD in an isolated worktree, verifies indep
 ## How It Works
 
 ```
-SETUP: Spec --> Worktree --> 3 agents learn codebase in parallel
+SETUP: Spec --> Worktree --> 3 agents --> Baseline verification
 
 THE LOOP (up to 3 cycles):
 
-  1. BUILD        Builder implements with strict TDD
-  2. VERIFY       Independent verifier runs all checks
-  2b. FIX         If verify fails, builder fixes (up to 5 retries)
-  3. PUBLISH      Commit, push, create/update PR
-  4. REVIEW       Reviewer checks PR diff against spec
+  1. PLAN         Builder submits build plan for approval (cycle 1 only)
+  2. BUILD        Builder creates sub-tasks, implements with strict TDD
+  3. VERIFY       Independent verifier runs checks against baseline
+  3b. FIX         If verify fails, builder fixes (up to 5 retries)
+                  Stagnation detection: 3 identical failures = abort
+  4. PUBLISH      Commit, push, create/update PR with priority checklist
+  5. REVIEW       Reviewer checks PR diff against spec by priority
 
   PASS --> Done. PR ready for human review.
   FAIL --> Findings sent to builder, next cycle starts.
+  ABORT --> State saved for resume.
 ```
 
 **Three agents, single responsibility each:**
 
 | Agent | Job | Access |
 |-------|-----|--------|
-| Builder | Implement spec with TDD, commit code | Read/write code, run commands, git |
-| Verifier | Run checks, validate plan adherence | Read-only. Cannot edit files. |
-| Reviewer | Review PR diff against spec | GitHub CLI only. No local file access. |
+| Builder | Implement spec with TDD, create sub-tasks, commit code | Read/write code, run commands, git |
+| Verifier | Run checks, validate plan adherence, report failure_keys | Read-only. Cannot edit files. |
+| Reviewer | Review PR diff against spec with priority tracking | GitHub CLI only. Can request screenshots. |
 
-The orchestrator (your session) coordinates via short status messages — it never reads code or runs tests, keeping its context window clean for the full loop.
+Progress visible in real time via `Ctrl+T` (task list). The orchestrator coordinates via tasks — it never reads code or runs tests.
 
 ## Install
 
@@ -104,7 +107,7 @@ claude --dangerously-skip-permissions
 /tim-spec add rate limiting to the API
 ```
 
-Walks you through brainstorming, then outputs a structured spec to `docs/specs/`.
+Walks you through brainstorming, explores the codebase for architecture context, then outputs a structured spec to `docs/specs/` with prioritized requirements, test strategy, and risk assessment.
 
 ### 2. Run the loop
 
@@ -112,16 +115,25 @@ Walks you through brainstorming, then outputs a structured spec to `docs/specs/`
 /tim-loop docs/specs/2026-02-28-rate-limiting.md
 ```
 
-You'll see one-line progress updates:
+You'll see one-line progress updates and can check `Ctrl+T` for the full task list:
 
 ```
-Cycle 1/3: Build complete. Starting verify...
+Cycle 1/3: Plan approved. Builder creating sub-tasks...
+Cycle 1/3: Build complete (6/6 sub-tasks done). Starting verify...
 Cycle 1/3: Verify FAIL (attempt 2/5, FIXABLE). Builder fixing...
 Cycle 1/3: Verify PASS. Publishing PR...
 Cycle 1/3: Review PASS. PR #47 ready for human review.
 ```
 
-### 3. Write specs manually
+### 3. Resume after abort
+
+If the loop aborts, state is saved to `.tim-loop-resume.json` in the worktree:
+
+```
+/tim-loop --resume /path/to/worktree/.tim-loop-resume.json
+```
+
+### 4. Write specs manually
 
 If you skip `/tim-spec`, your spec needs at minimum these sections:
 
@@ -132,34 +144,50 @@ If you skip `/tim-spec`, your spec needs at minimum these sections:
 Prevent API abuse by enforcing per-user request limits.
 
 ## Requirements
-- [ ] 100 requests per minute per user
-- [ ] Return 429 with Retry-After header when exceeded
+- [ ] [P0] 100 requests per minute per user
+- [ ] [P0] Return 429 with Retry-After header when exceeded
+- [ ] [P1] Admin dashboard showing rate limit stats
 
 ## Acceptance Criteria
 - Authenticated user making 101 requests in 60s gets 429 on the 101st
 - Retry-After header value matches remaining cooldown seconds
 ```
 
-Optional sections: `## Architecture`, `## Verification`, `## Out of Scope`.
+Optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessment`, `## Open Questions`, `## Loop Config`, `## Verification`, `## Out of Scope`.
+
+## Key Features
+
+- **Task-driven coordination** — agents use TaskCreate/TaskUpdate. Progress visible via `Ctrl+T`.
+- **Baseline verification** — pre-existing failures recorded before building. No false negatives.
+- **Plan approval** — builder submits a build plan for review before coding (cycle 1).
+- **Priority requirements** — `[P0]`/`[P1]`/`[P2]` tags determine build order and review strictness.
+- **Granular sub-tasks** — builder creates 5-6 sub-tasks for real-time progress tracking.
+- **Incremental verification** — retries run previously-failed checks first before the full suite.
+- **Stagnation detection** — 3 identical failure_key sets aborts instead of wasting retries.
+- **Configurable loop** — spec overrides for cycle counts, retries, plan approval, baseline.
+- **Abort and resume** — state saved to `.tim-loop-resume.json` for later continuation.
+- **Visual review** — reviewer can request screenshots from verifier for UI changes.
 
 ## Design Principles
 
-**Thin orchestrator / fat agents** — The orchestrator only tracks cycle numbers, verdicts, and prognoses. All real work (code reading, test running, diff analysis) happens in agents. This keeps the main context window clean enough to survive 3 full cycles.
+**Thin orchestrator / fat agents** — The orchestrator creates tasks and reads task metadata (verdicts, failure_keys, prognoses). All real work (code reading, test running, diff analysis) happens in agents. This keeps the main context window clean enough to survive the full loop.
 
-**Iron Laws + Progressive Disclosure** — Each agent gets 5 critical rules in its spawn prompt (reliably followed) plus a reference file with detailed guidance (read on first turn). Based on research showing LLMs follow ~150 instructions with reasonable consistency — fewer strong rules beat many weak ones.
+**Iron Laws + Progressive Disclosure** — Each agent gets 5-6 critical rules in its spawn prompt (reliably followed) plus a reference file with detailed guidance (read on first turn). Fewer strong rules beat many weak ones.
+
+**Task-driven state machine** — The shared task list IS the coordination layer. The orchestrator doesn't parse messages for verdicts — structured metadata on completed tasks provides clean, reliable signals for loop decisions.
 
 **3-tier verification** — (1) Always: typecheck, lint, tests, build. (2) Platform-detected: Playwright for web, xctest for iOS, e2e suites, etc. (3) Spec override: custom checks defined in the spec.
 
 ## Configuration
 
-Edit `~/.claude/skills/tim-loop/SKILL.md` to change defaults:
+Defaults are overridable per-spec via the `## Loop Config` section:
 
-| Setting | Default |
-|---------|---------|
-| Outer cycles | 3 |
-| Inner retries | 5 |
-| TDD | Strict |
-| Worktree | Always |
+| Setting | Default | Spec Override |
+|---------|---------|---------------|
+| Outer cycles | 3 | `max_outer_cycles: N` |
+| Inner retries | 5 | `max_inner_retries: N` |
+| Plan approval (cycle 1) | true | `require_plan_approval: false` |
+| Baseline verification | true | `skip_baseline: true` |
 
 ## File Structure
 
