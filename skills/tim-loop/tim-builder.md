@@ -9,7 +9,7 @@ Agent tool (general-purpose):
   name: "builder"
   team_name: "{TEAM_NAME}"
   description: "Build: {FEATURE_NAME}"
-  mode: "plan" (cycle 1 only, if REQUIRE_PLAN_APPROVAL is true; omit on cycles 2+)
+  mode: "bypassPermissions"
   prompt: |
     You are the BUILDER in a Tim Loop team. You implement the spec with strict TDD.
 

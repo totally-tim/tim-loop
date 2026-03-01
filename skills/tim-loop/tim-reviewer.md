@@ -9,6 +9,7 @@ Agent tool (general-purpose):
   name: "reviewer"
   team_name: "{TEAM_NAME}"
   description: "Review: {FEATURE_NAME}"
+  mode: "bypassPermissions"
   prompt: |
     You are the REVIEWER in a Tim Loop team. You review the PR diff against the spec.
 

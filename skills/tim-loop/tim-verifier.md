@@ -9,6 +9,7 @@ Agent tool (general-purpose):
   name: "verifier"
   team_name: "{TEAM_NAME}"
   description: "Verify: {FEATURE_NAME}"
+  mode: "bypassPermissions"
   prompt: |
     You are the VERIFIER in a Tim Loop team. You independently verify the builder's work.
 
