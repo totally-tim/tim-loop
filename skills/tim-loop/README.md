@@ -1,41 +1,44 @@
 # Tim Loop — Automated Build-Verify-Review System
 
-An automated development loop for Claude Code that takes a feature spec, builds it with TDD, verifies independently, publishes a PR, and reviews it — repeating until the reviewer passes or max cycles are exhausted.
+An automated development loop for Claude Code that takes a feature spec, builds it with TDD using parallel builders, verifies independently, publishes a PR, and reviews it — repeating until the reviewer passes or max cycles are exhausted.
 
 ## What It Does
 
 ```
-You write a spec  -->  Worktree created  -->  3 agents work in a loop  -->  PR ready for review
+You write a spec  -->  Worktree created  -->  Architect partitions work  -->  N builders work in parallel  -->  PR ready for review
 ```
 
 **The loop:**
-1. **BASELINE** — Verifier records pre-existing failures before the builder starts
-2. **PLAN** — Builder studies the codebase and submits a build plan for approval (cycle 1)
-3. **BUILD** — Builder creates prioritized sub-tasks and implements with strict TDD
-4. **VERIFY** — Independent verifier runs checks, compares against baseline, reports failure_keys
-5. **FIX** — If verify fails, builder fixes. Stagnation detection aborts after 3 identical failures
-6. **PUBLISH** — Code committed, pushed, PR created/updated with priority checklist
+1. **BASELINE** — Verifier records pre-existing failures before building starts
+2. **ARCHITECT** — Architect analyzes the codebase, writes shared contracts, and partitions work into N non-overlapping file scopes
+3. **BUILD** — N builders work in parallel, each implementing their partition with strict TDD
+4. **VERIFY** — Independent verifier runs checks against combined output, compares against baseline
+5. **FIX** — If verify fails, failures are routed to the owning builder by file path. Per-builder stagnation detection
+6. **PUBLISH** — Code committed, pushed, PR created/updated with priority checklist from all partitions
 7. **REVIEW** — Reviewer checks PR diff against spec with priority-aware coverage tracking
-8. If review fails, findings go back to builder for the next cycle
+8. If review fails, findings are routed to relevant builders for the next cycle
 
-**Three agents, each with a single job:**
-- **Builder** — writes code and tests (TDD), creates sub-tasks, commits
+**Four agent roles:**
+- **Architect** — explores codebase, creates implementation contract with shared types and partitions, shuts down after planning
+- **Builder(s)** — N parallel builders, each scoped to their own files, implementing with TDD
 - **Verifier** — runs all checks independently, can't edit code, reports structured failure_keys
 - **Reviewer** — reviews PR diff via `gh` CLI, can request screenshots from verifier
 
 The orchestrator coordinates via a shared task list (`Ctrl+T` to see progress) — it never reads code or runs tests.
 
-## Key Features (v2)
+## Key Features (v3 — Builder Swarm)
 
-- **Task-driven coordination** — agents use TaskCreate/TaskUpdate instead of message-passing. Progress visible to the user in real time via `Ctrl+T`.
+- **Parallel builders** — architect partitions work across N builders with non-overlapping file scopes. Each builder gets a focused context window.
+- **Architect agent** — dedicated agent explores the codebase, writes shared types/interfaces to disk, and creates an implementation contract before builders start.
+- **File-scoped routing** — verification failures are routed to the owning builder by file path. Builders only fix issues in their partition.
+- **Per-builder stagnation** — stagnation detection is per-builder. A stagnant builder can be isolated while others continue.
+- **Backward compatible** — when the architect produces 1 partition, falls back to single-builder behavior with no scope restrictions.
+- **Task-driven coordination** — agents use TaskCreate/TaskUpdate instead of message-passing. Progress visible in real time via `Ctrl+T`.
 - **Baseline verification** — pre-existing failures are recorded before building, preventing false negatives.
-- **Plan approval** — on cycle 1, the builder submits a build plan for orchestrator review before coding.
 - **Priority-based requirements** — `[P0]`/`[P1]`/`[P2]` tags determine build order and review strictness.
-- **Granular sub-tasks** — builder breaks work into 5-6 sub-tasks for fine-grained progress tracking.
 - **Incremental verification** — on retry, previously-failed checks run first before the full suite.
-- **Stagnation detection** — 3 identical failure_key sets in a row triggers an abort instead of wasting retries.
-- **Configurable loop** — spec can override `max_outer_cycles`, `max_inner_retries`, `require_plan_approval`, `skip_baseline`.
-- **Abort and resume** — on abort, state is saved to `.tim-loop-resume.json` for later continuation.
+- **Configurable loop** — spec can override `max_outer_cycles`, `max_inner_retries`, `builder_count`, `max_builders`, and more.
+- **Abort and resume** — on abort, per-partition state is saved to `.tim-loop-resume.json`. Resume spawns builders only for incomplete partitions.
 - **Visual review** — reviewer can request screenshots from the verifier for UI changes.
 
 ## Installation
@@ -71,6 +74,7 @@ Start a new Claude Code session — `/tim-spec` and `/tim-loop` will appear in a
 ~/.claude/skills/
 ├── tim-loop/
 │   ├── SKILL.md           # Orchestrator skill (the loop logic)
+│   ├── tim-architect.md   # Architect agent prompt + reference (new)
 │   ├── tim-builder.md     # Builder agent prompt + reference
 │   ├── tim-verifier.md    # Verifier agent prompt + reference
 │   ├── tim-reviewer.md    # Reviewer agent prompt + reference
@@ -103,9 +107,9 @@ This walks you through brainstorming, explores the codebase for architecture con
 Progress updates show in your terminal and the task list (`Ctrl+T`):
 
 ```
-Cycle 1/3: Plan approved. Builder creating sub-tasks...
-Cycle 1/3: Build complete (6/6 sub-tasks done). Starting verify...
-Cycle 1/3: Verify FAIL (attempt 2/5, FIXABLE). Builder fixing...
+Architect approved. Spawning 3 builders...
+Cycle 1/3: Build complete (3/3 builders done). Starting verify...
+Cycle 1/3: Verify FAIL (attempt 2/5, FIXABLE). Routing fixes to 2 builder(s)...
 Cycle 1/3: Verify PASS. Publishing PR...
 Cycle 1/3: Review PASS. PR #47 ready for human review.
 ```
@@ -168,6 +172,8 @@ Defaults are overridable per-spec via the `## Loop Config` section:
 | Inner retries | 5 | `max_inner_retries: N` |
 | Plan approval (cycle 1) | true | `require_plan_approval: false` |
 | Baseline verification | true | `skip_baseline: true` |
+| Builder count | auto | `builder_count: N` or `auto` |
+| Max builders | 5 | `max_builders: N` |
 | TDD enforcement | Strict | Not configurable |
 | Worktree isolation | Always | Not configurable |
 
@@ -178,3 +184,5 @@ The orchestrator follows a "thin coordinator" pattern — it creates tasks, read
 Agent prompts use an "Iron Laws + Progressive Disclosure" pattern: 5-6 critical rules in the spawn prompt (reliably followed), with detailed process guidance in reference files that agents read on their first turn.
 
 Task-driven coordination means the orchestrator doesn't need to parse agent messages for verdicts — structured metadata on completed tasks provides clean, reliable signals for loop decisions.
+
+The architect agent produces a partition plan that splits work by file ownership — two builders never edit the same file, eliminating merge conflicts. Failures route back to the owning builder by file path in the failure key.

@@ -51,6 +51,11 @@ Reference CLAUDE.md and existing patterns.
 Include specific file paths, naming conventions, and abstractions discovered
 during codebase exploration. Do NOT leave this section vague.
 
+When the feature spans multiple independent modules, clearly identify module
+boundaries. This helps the architect agent partition work across parallel
+builders. For example: "The API logic lives in src/api/, the business logic
+in src/services/, and the UI in src/components/ — these are independent modules."
+
 ## Acceptance Criteria
 Concrete, testable conditions that define "done".
 - When X happens, Y should result
@@ -80,6 +85,8 @@ Override tim-loop defaults for this feature.
 - max_inner_retries: 5
 - require_plan_approval: true
 - skip_baseline: false
+- builder_count: auto
+- max_builders: 5
 
 ## Verification (optional)
 Custom verification steps beyond the default 3-tier verification.
