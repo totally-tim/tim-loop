@@ -172,15 +172,28 @@ TaskCreate:
   subject: "Run baseline verification"
   description: "Run all Tier 1 checks (typecheck, lint, tests, build) on the
     clean worktree before any changes. Record which checks already fail.
-    Report baseline as task metadata."
+    Also report the test infrastructure you discovered.
+    Report baseline and discovery as task metadata:
+      metadata: {
+        baseline_failures: ['tier1/test/auth.test.ts:42', ...],
+        discovery: {
+          test_runner: 'vitest',
+          test_command: 'npm test',
+          lint_command: 'npm run lint',
+          typecheck_command: 'npx tsc --noEmit',
+          build_command: 'npm run build',
+          frameworks: ['vitest', 'eslint', 'typescript']
+        }
+      }"
   owner: verifier
 ```
 
-Wait for verifier to complete this task. The verifier stores baseline failures in
-the task metadata as `{ baseline_failures: ["tier1/test/auth.test.ts:42", ...] }`.
+Wait for verifier to complete this task. The verifier stores baseline failures and
+discovery in the task metadata.
 
-Record the baseline. All subsequent verify tasks include this baseline so the
-verifier can distinguish pre-existing failures from builder-introduced failures.
+Record the baseline AND the verifier discovery. The baseline is included in all
+subsequent verify tasks. The discovery is passed to fresh verifiers on agent refresh
+so they don't need to re-discover test infrastructure.
 
 ## THE LOOP
 
@@ -188,6 +201,7 @@ verifier can distinguish pre-existing failures from builder-introduced failures.
 outer_cycle = 1
 pr_number = null
 baseline = (from Step 6, or empty if skipped)
+verifier_discovery = (from Step 6 task metadata, or empty if skipped)
 failure_history_per_builder = {}  // map: builder_name -> list of failure_key sets
 
 while outer_cycle <= MAX_OUTER_CYCLES:
@@ -376,7 +390,19 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     ## Route reviewer findings to relevant builders for next cycle
     reviewer_findings_by_builder = route_findings_to_builders(reviewer_findings, partitions)
 
-    Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Review FAIL. Starting cycle {outer_cycle + 1}..."
+    Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Review FAIL. Refreshing agents for cycle {outer_cycle + 1}..."
+
+    ## Refresh all agents before next cycle — fresh context windows
+    REFRESH_AGENTS(
+      cycle_number = outer_cycle + 1,
+      reviewer_findings_by_builder,
+      pr_number,
+      baseline,
+      partitions,
+      contract_content,
+      verifier_discovery
+    )
+
     outer_cycle += 1
 
 // If we get here, all cycles exhausted
@@ -406,6 +432,14 @@ When aborting for any reason:
        "pr_number": 47,
        "outer_cycle": 2,
        "inner_attempt": 3,
+       "verifier_discovery": {
+         "test_runner": "vitest",
+         "test_command": "npm test",
+         "lint_command": "npm run lint",
+         "typecheck_command": "npx tsc --noEmit",
+         "build_command": "npm run build",
+         "frameworks": ["vitest", "eslint", "typescript"]
+       },
        "partitions": [
          {
            "name": "auth-module",
@@ -442,21 +476,23 @@ When aborting for any reason:
 1. Read the resume state file
 2. Read the spec from `spec_path`
 3. Read the contract from `contract_path` (already on disk in the worktree)
-4. Create a new team (old agents are gone — no session resumption for teammates)
-5. Spawn fresh verifier and reviewer agents
-6. Spawn builders ONLY for partitions with status != "completed":
+4. Extract `verifier_discovery` from the resume state (if present)
+5. Create a new team (old agents are gone — no session resumption for teammates)
+6. Spawn fresh verifier with `verifier_discovery` from resume state (so it skips re-discovery)
+7. Spawn fresh reviewer agents
+8. Spawn builders ONLY for partitions with status != "completed":
    - For each incomplete partition, spawn a builder with that partition's scope
    - Completed partitions do not need a builder
    - Do NOT re-spawn the architect — the contract is already on disk
-7. Read the existing task list to see what was completed before the abort
-8. Skip to the phase where the abort occurred:
+9. Read the existing task list to see what was completed before the abort
+10. Skip to the phase where the abort occurred:
    - If aborted during VERIFY: create a new verify task at the next attempt
    - If aborted during FIX: create fix tasks for the failing partitions
    - If aborted during REVIEW: start the next outer cycle
    - If all cycles exhausted: inform user, suggest manual intervention
    - If a partition was marked "needs_human": inform user which partition
      needs manual intervention and continue with remaining partitions
-9. Continue the loop from there
+11. Continue the loop from there
 
 ## SHUTDOWN_TEAM Procedure
 
@@ -465,10 +501,48 @@ When aborting for any reason:
 3. Wait for all to confirm
 4. Call TeamDelete to clean up team resources
 
+## REFRESH_AGENTS Procedure
+
+Called between outer cycles to give all agents fresh context windows.
+The team and task list persist — only agents are swapped.
+
+```
+REFRESH_AGENTS(cycle_number, reviewer_findings_by_builder, pr_number, baseline, partitions, contract_content, verifier_discovery):
+
+  ## 1. Shutdown all current agents in parallel
+  Send shutdown_request to ALL builders, verifier, and reviewer simultaneously.
+  Wait for all confirmations.
+
+  ## 2. Re-read prompt templates from disk
+  Re-read tim-builder.md, tim-verifier.md, tim-reviewer.md, tim-verify.md.
+  (Templates may have been updated between cycles.)
+
+  ## 3. Spawn fresh verifier
+  Use the verifier spawn template with added context:
+    - {VERIFIER_DISCOVERY} = verifier_discovery (from baseline task metadata)
+    - {BASELINE} = baseline failures
+    - {PR_NUMBER} = current PR number
+    - {CYCLE_NUMBER} = cycle_number
+
+  ## 4. Spawn fresh reviewer
+  Use the reviewer spawn template with added context:
+    - {PR_NUMBER} = current PR number
+    - {CYCLE_NUMBER} = cycle_number
+
+  ## 5. Spawn fresh builders (one per incomplete partition)
+  For each partition where status != "needs_human":
+    Use the builder spawn template with:
+      - {CYCLE_NUMBER} = cycle_number
+      - {PREVIOUS_FINDINGS_OR_EMPTY} = reviewer_findings_by_builder[partition.builder_name]
+      - {CONTRACT_CONTENT} = contract_content
+
+  ## 6. Wait for all fresh agents to report ready
+```
+
 ## Orchestrator Iron Laws
 
 1. **Delegate everything.** Never read files, run commands, or analyze output. Agents do all work.
-2. **Tasks are the state machine.** Create tasks with dependencies, read task metadata for decisions. Counters tracked: cycle, attempt, failure_keys (per builder), prognosis, pr_number, partitions.
+2. **Tasks are the state machine.** Create tasks with dependencies, read task metadata for decisions. Counters tracked: cycle, attempt, failure_keys (per builder), prognosis, pr_number, partitions, verifier_discovery.
 3. **Never skip phases.** ARCHITECT -> BUILD -> VERIFY -> PUBLISH -> REVIEW. Always.
 4. **Abort on NEEDS_HUMAN.** Immediately. No retries.
 5. **Abort on stagnation.** 3 consecutive identical failure_key sets per builder in inner loop = builder stagnant. Isolate if independent, abort if dependent.
@@ -484,7 +558,8 @@ One line per phase transition:
 - "Cycle 1/3: Verify FAIL (attempt 2/5, FIXABLE). Routing fixes to 2 builder(s)..."
 - "Cycle 1/3: Builder-2 stagnant. Marking partition as NEEDS_HUMAN."
 - "Cycle 1/3: Verify PASS. Publishing PR..."
-- "Cycle 1/3: Review FAIL (1 blocking). Routing findings to builder-1. Starting cycle 2..."
+- "Cycle 1/3: Review FAIL (1 blocking). Refreshing agents for cycle 2..."
+- "Cycle 1/3: Agents refreshed (3 builders, verifier, reviewer). Starting cycle 2..."
 - "Cycle 2/3: Build complete. Starting verify..."
 
 ## Skill Dependencies

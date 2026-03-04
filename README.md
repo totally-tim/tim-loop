@@ -24,7 +24,7 @@ THE LOOP (up to 3 cycles):
   4. REVIEW       Reviewer checks PR diff against spec by priority
 
   PASS --> Done. PR ready for human review.
-  FAIL --> Findings routed to relevant builders, next cycle starts.
+  FAIL --> All agents shut down, fresh agents spawned for next cycle.
   ABORT --> Per-partition state saved for resume.
 ```
 
@@ -149,7 +149,11 @@ Architect approved. Spawning 3 builders...
 Cycle 1/3: Build complete (3/3 builders done). Starting verify...
 Cycle 1/3: Verify FAIL (attempt 2/5, FIXABLE). Routing fixes to 2 builder(s)...
 Cycle 1/3: Verify PASS. Publishing PR...
-Cycle 1/3: Review PASS. PR #47 ready for human review.
+Cycle 1/3: Review FAIL (1 blocking). Refreshing agents for cycle 2...
+Cycle 1/3: Agents refreshed (3 builders, verifier, reviewer). Starting cycle 2...
+Cycle 2/3: Build complete (3/3 builders done). Starting verify...
+Cycle 2/3: Verify PASS. Publishing PR...
+Cycle 2/3: Review PASS. PR #47 ready for human review.
 ```
 
 ### 3. Resume after abort
@@ -199,6 +203,7 @@ Optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessment`, 
 - **Configurable loop** — spec overrides for cycles, retries, builder count, baseline, and more.
 - **Abort and resume** — per-partition state saved to `.tim-loop-resume.json`. Resume spawns builders only for incomplete partitions.
 - **Visual review** — reviewer can request screenshots from verifier for UI changes.
+- **Agent refresh between cycles** — all agents are shut down and re-spawned with fresh context windows between outer cycles. Prevents context bloat from accumulated fix attempts. Verifier discovery (test runners, commands) is carried forward so fresh verifiers skip re-discovery.
 - **Backward compatible** — single partition = single builder with no scope restrictions.
 
 ## Configuration

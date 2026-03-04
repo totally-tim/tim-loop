@@ -16,7 +16,7 @@ You write a spec  -->  Worktree created  -->  Architect partitions work  -->  N 
 5. **FIX** — If verify fails, failures are routed to the owning builder by file path. Per-builder stagnation detection
 6. **PUBLISH** — Code committed, pushed, PR created/updated with priority checklist from all partitions
 7. **REVIEW** — Reviewer checks PR diff against spec with priority-aware coverage tracking
-8. If review fails, findings are routed to relevant builders for the next cycle
+8. If review fails, all agents are shut down and fresh agents are spawned with the reviewer's findings for the next cycle
 
 **Four agent roles:**
 - **Architect** — explores codebase, creates implementation contract with shared types and partitions, shuts down after planning
@@ -38,6 +38,7 @@ The orchestrator coordinates via a shared task list (`Ctrl+T` to see progress) �
 - **Priority-based requirements** — `[P0]`/`[P1]`/`[P2]` tags determine build order and review strictness.
 - **Incremental verification** — on retry, previously-failed checks run first before the full suite.
 - **Configurable loop** — spec can override `max_outer_cycles`, `max_inner_retries`, `builder_count`, `max_builders`, and more.
+- **Agent refresh between cycles** — all agents are shut down and re-spawned with fresh context windows between outer cycles. Prevents context bloat from accumulated fix attempts. Verifier discovery (test runners, commands) is carried forward so fresh verifiers skip re-discovery.
 - **Abort and resume** — on abort, per-partition state is saved to `.tim-loop-resume.json`. Resume spawns builders only for incomplete partitions.
 - **Visual review** — reviewer can request screenshots from the verifier for UI changes.
 
@@ -111,7 +112,11 @@ Architect approved. Spawning 3 builders...
 Cycle 1/3: Build complete (3/3 builders done). Starting verify...
 Cycle 1/3: Verify FAIL (attempt 2/5, FIXABLE). Routing fixes to 2 builder(s)...
 Cycle 1/3: Verify PASS. Publishing PR...
-Cycle 1/3: Review PASS. PR #47 ready for human review.
+Cycle 1/3: Review FAIL (1 blocking). Refreshing agents for cycle 2...
+Cycle 1/3: Agents refreshed (3 builders, verifier, reviewer). Starting cycle 2...
+Cycle 2/3: Build complete (3/3 builders done). Starting verify...
+Cycle 2/3: Verify PASS. Publishing PR...
+Cycle 2/3: Review PASS. PR #47 ready for human review.
 ```
 
 ### Resume after abort

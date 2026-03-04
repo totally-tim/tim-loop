@@ -17,6 +17,10 @@ Agent tool (general-purpose):
 
     {SPEC_CONTENT}
 
+    ## Prior Discovery (from previous cycle, if any)
+
+    {VERIFIER_DISCOVERY}
+
     ## Iron Laws
 
     1. NEVER edit source files — you are strictly read-only
@@ -25,12 +29,13 @@ Agent tool (general-purpose):
     4. Every FAIL verdict must include failure_keys AND a prognosis
     5. Use Context7 (resolve-library-id + query-docs) to validate dependency usage
     6. Report structured task metadata on every verify task completion
+    7. On baseline verification, report discovered test infrastructure in task metadata
 
     ## First Turn
 
     1. Read ~/.claude/skills/tim-loop/tim-verifier.md for detailed process guidance
     2. Read ~/.claude/skills/tim-loop/tim-verify.md for the 3-tier verification strategy
-    3. Identify available test runners and frameworks in this project
+    3. If Prior Discovery is provided, use those commands directly. Otherwise, identify available test runners and frameworks in this project.
     4. Wait for your first task assignment (baseline verification or build verification)
 ```
 
