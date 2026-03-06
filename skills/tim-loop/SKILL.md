@@ -228,6 +228,8 @@ while outer_cycle <= MAX_OUTER_CYCLES:
   ## Create parallel build tasks — one per partition
   build_task_ids = []
   for partition in partitions:
+    if partition.status == "needs_human":
+      continue
     task = TaskCreate:
       subject: "Build partition: {partition.name} (cycle {outer_cycle})"
       description: |
@@ -273,6 +275,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
 
     Wait for verifier to complete the verify task.
     Read task metadata for: verdict, failure_keys, prognosis.
+    previous_failure_keys = failure_keys
 
     if verdict == "PASS":
       verified = true
@@ -320,6 +323,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
             partition = find_partition_by_builder(builder_name, partitions)
             if all_partitions_independent(partitions):
               partition.status = "needs_human"
+              Send shutdown_request to {builder_name}
               Tell user: "Marking partition {partition.name} as NEEDS_HUMAN. Other builders continue."
               del builder_failures[builder_name]  // remove from fix routing
             else:
@@ -351,7 +355,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
   ## 3. PUBLISH
   Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Publishing..."
 
-  publisher = partitions[0].builder_name  // builder-1 or "builder" in single mode
+  publisher = next(p.builder_name for p in partitions if p.status != "needs_human")
 
   TaskCreate:
     subject: "Publish PR (cycle {outer_cycle})"
@@ -379,13 +383,13 @@ while outer_cycle <= MAX_OUTER_CYCLES:
       Review PR #{pr_number} against the spec.
       Cycle {outer_cycle} of {MAX_OUTER_CYCLES}.
       Check every spec requirement. Use structured findings.
-      On FAIL: send detailed findings to ALL builders via SendMessage.
-      Report verdict, prognosis, and finding count in task metadata:
-        metadata: { verdict: "PASS"|"FAIL", prognosis: "...", blocking_count: N }
+      Report verdict, prognosis, finding count, and findings in task metadata:
+        metadata: { verdict: "PASS"|"FAIL", prognosis: "...", blocking_count: N, findings: [...] }
     owner: reviewer
 
   Wait for reviewer to complete review task.
   Read task metadata for: verdict, prognosis.
+  reviewer_findings = task.metadata.findings
 
   if verdict == "PASS":
     Tell user: "Review PASS. PR #{pr_number} ready for human review."
@@ -400,18 +404,21 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     ## Route reviewer findings to relevant builders for next cycle
     reviewer_findings_by_builder = route_findings_to_builders(reviewer_findings, partitions)
 
-    Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Review FAIL. Refreshing agents for cycle {outer_cycle + 1}..."
+    if outer_cycle < MAX_OUTER_CYCLES:
+      Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Review FAIL. Refreshing agents for cycle {outer_cycle + 1}..."
 
-    ## Refresh all agents before next cycle — fresh context windows
-    REFRESH_AGENTS(
-      cycle_number = outer_cycle + 1,
-      reviewer_findings_by_builder,
-      pr_number,
-      baseline,
-      partitions,
-      contract_content,
-      verifier_discovery
-    )
+      ## Refresh all agents before next cycle — fresh context windows
+      REFRESH_AGENTS(
+        cycle_number = outer_cycle + 1,
+        reviewer_findings_by_builder,
+        pr_number,
+        baseline,
+        partitions,
+        contract_content,
+        verifier_discovery
+      )
+
+      failure_history_per_builder = {}
 
     outer_cycle += 1
 
@@ -490,12 +497,13 @@ When aborting for any reason:
 5. Create a new team (old agents are gone — no session resumption for teammates)
 6. Spawn fresh verifier with `verifier_discovery` from resume state (so it skips re-discovery)
 7. Spawn fresh reviewer agents
-8. Spawn builders ONLY for partitions with status != "completed":
+8. Spawn builders ONLY for partitions with status not in ("completed", "needs_human"):
    - For each incomplete partition, spawn a builder with that partition's scope
    - Completed partitions do not need a builder
    - Do NOT re-spawn the architect — the contract is already on disk
 9. Read the existing task list to see what was completed before the abort
 10. Skip to the phase where the abort occurred:
+   - If aborted during BUILD: create build tasks for incomplete partitions
    - If aborted during VERIFY: create a new verify task at the next attempt
    - If aborted during FIX: create fix tasks for the failing partitions
    - If aborted during REVIEW: start the next outer cycle
@@ -540,7 +548,7 @@ REFRESH_AGENTS(cycle_number, reviewer_findings_by_builder, pr_number, baseline, 
     - {CYCLE_NUMBER} = cycle_number
 
   ## 5. Spawn fresh builders (one per incomplete partition)
-  For each partition where status != "needs_human":
+  For each partition where status not in ("completed", "needs_human"):
     Use the builder spawn template with:
       - {CYCLE_NUMBER} = cycle_number
       - {PREVIOUS_FINDINGS_OR_EMPTY} = reviewer_findings_by_builder[partition.builder_name]

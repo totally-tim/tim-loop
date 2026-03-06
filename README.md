@@ -32,7 +32,7 @@ THE LOOP (up to 3 cycles):
 
 | Agent | Job | Access |
 |-------|-----|--------|
-| Architect | Explore codebase, write shared contracts, partition work into N scopes | Read-only. Shuts down after planning. |
+| Architect | Explore codebase, write shared contracts, partition work into N scopes | Writes shared contracts. Shuts down after planning. |
 | Builder(s) | Implement partition with TDD, fix failures, commit code | Read/write scoped to partition files. |
 | Verifier | Run checks, validate plan adherence, report failure_keys | Read-only. Cannot edit files. |
 | Reviewer | Review PR diff against spec with priority tracking | GitHub CLI only. Can request screenshots. |
