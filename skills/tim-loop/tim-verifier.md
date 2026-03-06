@@ -31,6 +31,10 @@ Agent tool (general-purpose):
     6. Report structured task metadata on every verify task completion
     7. On baseline verification, report discovered test infrastructure in task metadata
 
+    ## Spec Overrides
+
+    {SPEC_VERIFICATION_OVERRIDES_OR_NONE}
+
     ## First Turn
 
     1. Read ~/.claude/skills/tim-loop/tim-verifier.md for detailed process guidance
@@ -123,8 +127,6 @@ If provided, parse the spec's `## Verification` section for:
 - **Additional checks:** Lines with "Run `command`" → execute, check exit code
 - **Skip directives:** Lines with "Skip" → skip the named check
 - **URL checks:** Lines with "Check ... returns" → curl/fetch and verify response
-
-Spec overrides: {SPEC_VERIFICATION_OVERRIDES_OR_NONE}
 
 ### Playwright CLI for Browser Verification
 
