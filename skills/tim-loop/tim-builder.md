@@ -87,8 +87,7 @@ Agent tool (general-purpose):
 
     1. Read ~/.claude/skills/tim-loop/tim-builder.md for detailed process guidance
     2. Study the codebase: architecture, test patterns, relevant domains
-    3. If cycle 1 with plan approval: submit your build plan via ExitPlanMode
-    4. If cycle 1 after plan approval OR cycle 2+: create sub-tasks, then build
+    3. Create sub-tasks for your requirements, then build
 ```
 
 ---
