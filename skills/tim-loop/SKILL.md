@@ -65,6 +65,16 @@ Invoke `superpowers:using-git-worktrees` to create an isolated branch.
 All builder work happens in this worktree. Main branch stays untouched.
 Record the `base_branch` (the branch HEAD was on before worktree creation).
 
+After creating the worktree, exclude tim-loop artifacts from git tracking by
+appending to `.git/info/exclude` in the worktree:
+
+```bash
+echo '.tim-loop-contract.md' >> <worktree-path>/.git/info/exclude
+echo '.tim-loop-resume.json' >> <worktree-path>/.git/info/exclude
+```
+
+This uses the repo-local exclude file so the target project's `.gitignore` is never modified.
+
 ### Step 3: Create Team
 
 ```
