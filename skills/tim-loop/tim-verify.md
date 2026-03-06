@@ -135,8 +135,10 @@ When baseline_failures are provided:
 - **No match** → report as new failure
 - **Baseline failure now passing** → note as bonus improvement (not required)
 
-Use exact key matching. A baseline failure of `tier1/test/auth.test.ts:42` only
-excuses that specific test at that specific line.
+Use exact key matching for lint and typecheck failures (line numbers are stable for
+unchanged violations). For test failures, match by test name
+(e.g. `tier1/test/auth.test.ts:should validate JWT`) rather than line number,
+since line numbers shift when code changes.
 
 ## Reporting Format
 
