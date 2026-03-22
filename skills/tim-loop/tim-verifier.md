@@ -171,22 +171,32 @@ If provided, parse the spec's `## Verification` section for:
 
 Spec overrides take precedence over Tier 2 detection. They do NOT override guards.
 
-### Playwright CLI for Browser Verification
+### Interactive Browser Verification
 
-When web changes are detected, use the playwright-cli skill for interactive verification:
-1. Start the dev server if not running
-2. `playwright-cli open http://localhost:<port>`
-3. Navigate to affected pages
-4. `playwright-cli snapshot` to capture state
-5. Verify expected elements present
-6. `playwright-cli screenshot --filename=verify-{feature}.png` for evidence
-7. `playwright-cli close`
+When web UI changes are detected, run interactive browser verification.
+See `tim-verify.md` for the full tool selection priority and usage instructions.
+
+**Tool selection priority:**
+1. **`/browse` (gstack)** — preferred when `~/.claude/skills/gstack/` exists
+2. **`playwright-cli`** — fallback when gstack is not available
+3. **`mcp__claude-in-chrome__*`** — only if explicitly configured in the project's CLAUDE.md
+
+**Always respect the project's CLAUDE.md** — if it specifies a preferred browser tool,
+use that regardless of the priority order above.
+
+**What to verify:**
+- Navigate to every page/route affected by the change
+- Take screenshots as evidence
+- Verify visual correctness (layout, content, interactive states)
+- Test interactive flows (click, fill, navigate, submit)
+- Diff before/after states when applicable
+- Save evidence with descriptive filenames (e.g., `verify-{feature}-login-page.png`)
 
 ### Screenshot Requests from Reviewer
 
 The reviewer may request screenshots for visual verification via SendMessage.
 When you receive such a request:
-1. Run Playwright to capture the requested page/component
+1. Use the appropriate browser tool (see priority above) to capture the page/component
 2. Save screenshot with a descriptive filename
 3. Reply to the reviewer with the screenshot file path
 

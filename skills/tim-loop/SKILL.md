@@ -772,5 +772,11 @@ One line per phase transition:
 | superpowers:verification-before-completion | builders | Self-check before handoff |
 | superpowers:requesting-code-review | reviewer | Review methodology foundation |
 | superpowers:finishing-a-development-branch | orchestrator | Final cleanup after success |
-| playwright-cli | verifier | Browser automation for web verification |
+| /browse (gstack) | verifier | Interactive browser verification (preferred) |
+| playwright-cli | verifier | Interactive browser verification (fallback) |
 | Context7 MCP | all agents | Verify dependency APIs |
+
+**Browser tool selection:** The verifier uses `/browse` (gstack) when available, falls back to
+`playwright-cli`, and respects the project's CLAUDE.md if it specifies a preferred tool.
+Automated E2E test suites (Playwright tests, Cypress, etc.) are always run directly
+regardless of which interactive browser tool is used.

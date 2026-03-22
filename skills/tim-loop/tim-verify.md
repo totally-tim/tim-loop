@@ -100,19 +100,49 @@ Check for these signals and run the corresponding verification. Only run checks 
 
 | Signal | Verification Action | Notes |
 |--------|-------------------|-------|
+#### Automated E2E suites (run existing test suites)
+
+| Signal | Verification Action | Notes |
+|--------|-------------------|-------|
 | `playwright` in package.json deps | `pnpm exec playwright test` or `npx playwright test` | Start dev server first if needed |
 | `cypress` in package.json deps | `pnpm exec cypress run` | Start dev server first if needed |
 | `.xcodeproj` or `Package.swift` present | `xcodebuild test -scheme <scheme> -destination 'platform=iOS Simulator,name=iPhone 16'` | Detect scheme from project |
 | `vitest.config.e2e.ts` or `jest.config.e2e.ts` | Run E2E suite: `pnpm test:e2e` or equivalent | May need test infra (Docker, DB) |
 | `docker-compose*.test.yml` present | `docker compose -f <file> up -d` before E2E, `down` after | Spin up test infra first |
-| `apps/web/` or `src/pages/` changed | Playwright smoke on `http://localhost:3000` | Start dev server, run smoke tests |
 | `*.swift` files changed | `swift test` or `xcodebuild test` | Run in package/project dir |
 | Contract test files (`*.contract.test.*`) | Run contract test suite | Often separate config |
 | `*.spec.ts` with `@playwright/test` import | `pnpm exec playwright test <file>` | Run specific spec files |
 | Smoke test config (`vitest.config.smoke.*`) | Run smoke suite | May need running server |
-| `playwright-cli` available | Use `playwright-cli` for interactive browser verification | Snapshot-based validation |
 
-**When using playwright-cli for interactive browser verification:**
+#### Interactive browser verification (visual/manual checks)
+
+When web UI changes are detected (e.g., `apps/web/`, `src/pages/`, `src/components/`
+changed), run interactive browser verification for visual correctness.
+
+**Tool selection priority** (use the first available):
+
+1. **`/browse` (gstack)** — Preferred when gstack is installed. Fast headless browser
+   with screenshot, interaction, diffing, and element assertion. Use the `/browse` skill.
+2. **`playwright-cli`** — Fallback when gstack is not available. Superpowers headless
+   browser with snapshot-based validation.
+3. **`mcp__claude-in-chrome__*`** — Only if explicitly configured in the project's
+   CLAUDE.md. Not used by default.
+
+**Detection:** Check if gstack skills are available by looking for `~/.claude/skills/gstack/`.
+If present, use `/browse`. Otherwise, check for `playwright-cli` skill at
+`~/.claude/skills/playwright-cli/`. If neither is available, skip interactive browser
+verification and note it in the verify report.
+
+**When using `/browse` (gstack) for interactive browser verification:**
+1. Start the dev server if not running
+2. Navigate to affected pages
+3. Take screenshots of each affected page/component
+4. Verify expected elements are present and visually correct
+5. Test interactive flows (click, fill, navigate) for correct behavior
+6. Diff before/after states when applicable
+7. Save screenshot evidence with descriptive filenames
+
+**When using `playwright-cli` for interactive browser verification:**
 1. Start the dev server if not running
 2. `playwright-cli open http://localhost:<port>`
 3. Navigate to pages affected by the change
@@ -121,6 +151,10 @@ Check for these signals and run the corresponding verification. Only run checks 
 6. Check interactive flows (click, fill, navigate) match expected behavior
 7. `playwright-cli screenshot --filename=verify-{feature}.png` for evidence
 8. `playwright-cli close`
+
+**Project CLAUDE.md overrides:** If the project's CLAUDE.md specifies a preferred browser
+tool (e.g., "use /browse for all web browsing"), respect that directive regardless of
+the priority order above.
 
 ### Tier 3 — Spec Override
 
