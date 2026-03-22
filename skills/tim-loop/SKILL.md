@@ -1,6 +1,7 @@
 ---
 name: tim-loop
 description: Use when you have a feature spec and want to automatically build, verify, and review it in an isolated worktree with a multi-agent team
+effort: max
 ---
 
 # Tim Loop — Automated Build-Verify-Review Loop
@@ -246,126 +247,74 @@ cycle\tbuilder\titeration\tmetric\tguard\tstatus\tdescription
 ```
 outer_cycle = 1
 pr_number = null
-baseline = (from Step 6, or empty if skipped)
-baseline_metric = (from Step 6 task metadata, or null)
-verifier_discovery = (from Step 6 task metadata, or empty if skipped)
-metric_history_per_builder = {}  // map: builder_name -> list of {metric, status}
-discard_streak_per_builder = {}  // map: builder_name -> consecutive discard count
+baseline, baseline_metric, verifier_discovery = (from Step 6, or empty/null if skipped)
 
 while outer_cycle <= MAX_OUTER_CYCLES:
 
   ## 1. BUILD (with keep/discard iteration per builder)
   Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Starting build ({partition_count} builder(s))..."
 
-  if outer_cycle == 1 and REQUIRE_PLAN_APPROVAL:
-    ## PLAN APPROVAL was already handled in the Architect Phase (Step 5b).
-    pass
+  ## Create parallel build tasks for each non-NEEDS_HUMAN partition:
+  TaskCreate (one per active partition):
+    subject: "Build partition: {partition.name} (cycle {outer_cycle})"
+    description: |
+      You are building partition "{partition.name}" in your isolated worktree.
+      Worktree path: {partition.builder_worktree}
+      Your file scope: {partition.files}
+      Your requirements: {partition.requirements}
+      Implementation contract: {contract_content}
 
-  ## Create parallel build tasks — one per partition
-  build_task_ids = []
-  for partition in partitions:
-    if partition.status == "needs_human":
-      continue
-    task = TaskCreate:
-      subject: "Build partition: {partition.name} (cycle {outer_cycle})"
+      ## Iteration Discipline (autoresearch-style)
+
+      For each logical change:
+      1. Make ONE atomic change (if you need "and" to describe it, split it)
+      2. Commit with conventional message
+      3. Run guard checks: {GUARD_COMMANDS or "typecheck + lint + existing tests"}
+      4. If guard FAILS: `git revert HEAD` immediately — you broke something
+      5. If guard PASSES and metric_mode == "metric": run verify command, record metric
+         - Metric improved? KEEP (commit stays, advance)
+         - Metric same/worse? DISCARD (`git revert HEAD`), try different approach
+      6. If guard PASSES and metric_mode == "pass_fail": KEEP (commit stays)
+
+      Max iterations: {MAX_BUILDER_ITERATIONS}
+      Report each iteration outcome in task metadata as it happens:
+        metadata.iterations: [{metric: N, guard: "pass"|"fail", status: "keep"|"discard"|"revert", description: "..."}]
+
+      When all requirements are implemented (or max iterations reached),
+      mark this task complete with final metadata:
+        metadata: { final_metric: N, iterations_used: M, keeps: K, discards: D }
+
+      {If cycle 2+: "Incorporate findings for your partition: {partition_findings}"}
+    owner: {partition.builder_name}
+
+  Wait for ALL build tasks to complete.
+
+  ## Post-build: read iteration results from each builder's task metadata.
+  ## Log all iterations to TSV. Track consecutive discard streaks per builder.
+
+  ## Stuck detection: if any builder hit 5+ consecutive discards:
+  if builder hit 5+ consecutive discards AND rethink not yet attempted:
+    Tell user: "Attempting radical rethink for {builder}..."
+    TaskCreate:
+      subject: "Radical rethink: {partition.name} (cycle {outer_cycle})"
       description: |
-        You are building partition "{partition.name}" in your isolated worktree.
-        Worktree path: {partition.builder_worktree}
-        Your file scope: {partition.files}
-        Your requirements: {partition.requirements}
-        Implementation contract: {contract_content}
-
-        ## Iteration Discipline (autoresearch-style)
-
-        For each logical change:
-        1. Make ONE atomic change (if you need "and" to describe it, split it)
-        2. Commit with conventional message
-        3. Run guard checks: {GUARD_COMMANDS or "typecheck + lint + existing tests"}
-        4. If guard FAILS: `git revert HEAD` immediately — you broke something
-        5. If guard PASSES and metric_mode == "metric": run verify command, record metric
-           - Metric improved? KEEP (commit stays, advance)
-           - Metric same/worse? DISCARD (`git revert HEAD`), try different approach
-        6. If guard PASSES and metric_mode == "pass_fail": KEEP (commit stays)
-
-        Max iterations: {MAX_BUILDER_ITERATIONS}
-        Report each iteration outcome in task metadata as it happens:
-          metadata.iterations: [{metric: N, guard: "pass"|"fail", status: "keep"|"discard"|"revert", description: "..."}]
-
-        When all requirements are implemented (or max iterations reached),
-        mark this task complete with final metadata:
-          metadata: { final_metric: N, iterations_used: M, keeps: K, discards: D }
-
-        {If cycle 2+: "Incorporate findings for your partition: {partition_findings}"}
+        You hit 5 consecutive discards. Re-read the spec and your git log,
+        then try a fundamentally different approach. Max 3 more iterations.
+        Report outcome in task metadata.
       owner: {partition.builder_name}
 
-    build_task_ids.append(task.id)
+    Wait for rethink task.
+    if rethink succeeded:
+      Tell user: "Radical rethink succeeded."
+    else:
+      partition.status = "needs_human"
+      if not all_partitions_independent(partitions):
+        ABORT("Builder stagnant on dependent partition after rethink.")
 
-  ## Wait for ALL builders to complete their build tasks.
-  Wait for all tasks in build_task_ids to reach "completed" status.
-
-  ## Read iteration results from each builder's task metadata
-  for partition in partitions:
-    if partition.status == "needs_human":
-      continue
-    task_meta = read_task_metadata(partition.build_task_id)
-    iterations = task_meta.get("iterations", [])
-
-    ## Track discard streaks for stuck detection
-    consecutive_discards = 0
-    for it in iterations:
-      if it.status == "discard" or it.status == "revert":
-        consecutive_discards += 1
-      else:
-        consecutive_discards = 0
-
-    discard_streak_per_builder[partition.builder_name] = consecutive_discards
-
-    ## Log to TSV
-    for it in iterations:
-      append_tsv_row(outer_cycle, partition.builder_name, it.iteration, it.metric, it.guard, it.status, it.description)
-
-    ## Smart stuck detection (autoresearch-style escalation)
-    if consecutive_discards >= 5:
-      Tell user: "Builder {partition.builder_name} hit 5 consecutive discards."
-
-      ## Instead of immediately aborting, give one radical rethink attempt
-      if not partition.rethink_attempted:
-        partition.rethink_attempted = true
-        Tell user: "Attempting radical rethink for {partition.builder_name}..."
-
-        TaskCreate:
-          subject: "Radical rethink: {partition.name} (cycle {outer_cycle})"
-          description: |
-            You have hit 5 consecutive discards. Before giving up:
-            1. Re-read the FULL spec from scratch
-            2. Re-read the implementation contract
-            3. Review your git log to see what you tried
-            4. Try a FUNDAMENTALLY different approach:
-               - If you were adding, try modifying existing code instead
-               - If you were modifying, try a different file/module
-               - Combine elements from your 2-3 best (closest to working) attempts
-               - Try the OPPOSITE of your last approach
-            5. Make ONE atomic change and verify
-            Max 3 iterations for this rethink.
-            Report outcome in task metadata.
-          owner: {partition.builder_name}
-
-        Wait for rethink task to complete.
-        rethink_meta = read_task_metadata(rethink_task_id)
-
-        if rethink_meta.get("status") == "success":
-          Tell user: "Radical rethink succeeded for {partition.builder_name}."
-          ## Continue to verify phase
-        else:
-          partition.status = "needs_human"
-          Tell user: "Radical rethink failed. Marking {partition.name} as NEEDS_HUMAN."
-          if not all_partitions_independent(partitions):
-            ABORT("Builder {partition.builder_name} stagnant on dependent partition after rethink.")
-      else:
-        partition.status = "needs_human"
-        Tell user: "Marking {partition.name} as NEEDS_HUMAN (rethink already attempted)."
-        if not all_partitions_independent(partitions):
-          ABORT("Builder {partition.builder_name} stagnant on dependent partition.")
+  elif builder hit 5+ consecutive discards AND rethink already attempted:
+    partition.status = "needs_human"
+    if not all_partitions_independent(partitions):
+      ABORT("Builder stagnant on dependent partition.")
 
   Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Build complete. Starting integration..."
 
@@ -400,32 +349,15 @@ while outer_cycle <= MAX_OUTER_CYCLES:
           }
     owner: reviewer
 
-  Wait for reviewer to complete integration task.
-  Read integration metadata.
+  Wait for reviewer to complete integration task. Read integration metadata.
 
-  if integration_metadata.merge_conflicts:
-    ## Route conflict back to the conflicting builder
-    conflicting_builder = integration_metadata.conflicting_builder
-    Tell user: "Merge conflict from {conflicting_builder}. Routing resolution..."
+  if merge_conflicts:
+    Route conflict to the conflicting builder with a resolve task (rebase on integration).
+    Wait for resolution. Retry integration from the conflicting builder onward.
 
-    TaskCreate:
-      subject: "Resolve merge conflict (cycle {outer_cycle})"
-      description: |
-        Your branch caused a merge conflict when integrating into the main branch.
-        Conflicting files: {integration_metadata.files}
-        Resolve the conflict in YOUR worktree by rebasing on the integration branch:
-          git fetch origin
-          git rebase tim-loop/{feature-slug}/integration
-        Then re-verify with guard checks.
-      owner: {conflicting_builder}
-
-    Wait for resolution. Then retry integration from the conflicting builder onward.
-
-  if integration_metadata.guard_status == "fail":
-    ## Route guard failure to the builder whose merge broke it
-    failed_builder = integration_metadata.failed_after_builder
-    Tell user: "Guard failed after merging {failed_builder}. Routing fix..."
-    ## Send fix task to that builder, re-attempt integration after fix
+  if guard_status == "fail":
+    Route guard failure to the builder whose merge broke it (failed_after_builder).
+    Send fix task to that builder, re-attempt integration after fix.
 
   ## 3. VERIFY INTEGRATION (three-phase)
   Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Verifying integrated build..."
@@ -484,28 +416,13 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     if prognosis == "NEEDS_HUMAN":
       ABORT("Verifier reports issue needing human intervention.")
 
-    ## Route failures to owning builders for fix
     Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Integration verify FAIL ({prognosis}). Routing fixes..."
 
-    builder_failures = route_failures_to_builders(failure_keys, partitions)
-
-    ## Each builder fixes in their own worktree, then we re-integrate
-    fix_task_ids = []
-    for builder_name, keys in builder_failures.items():
-      task = TaskCreate:
-        subject: "Fix integration failures for {builder_name} (cycle {outer_cycle})"
-        description: |
-          The integrated build failed. These failures are in your partition:
-          {keys}
-          Fix in your worktree using keep/discard discipline.
-          The verifier sent you detailed findings via message.
-          When fixed, mark this task complete.
-        owner: {builder_name}
-      fix_task_ids.append(task.id)
-
+    ## Route failure_keys to owning builders by file path. Unroutable → builder-1.
+    ## Create fix tasks for each builder with failures. Builders fix in their own worktrees.
     Wait for all fix tasks to complete.
-    ## Re-attempt integration from Step 2 (max 2 re-integration attempts per cycle)
-    ## If still failing after 2 re-integrations, proceed to review with known issues
+    ## Re-attempt integration (max 2 re-integration attempts per cycle).
+    ## If still failing after 2 re-integrations, proceed to review with known issues.
 
   ## 4. PUBLISH
   Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Publishing..."
@@ -562,28 +479,15 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     if prognosis == "NEEDS_HUMAN":
       ABORT("Reviewer reports issue needing human intervention.")
 
-    ## Route reviewer findings to relevant builders for next cycle
-    reviewer_findings_by_builder = route_findings_to_builders(reviewer_findings, partitions)
+    ## Route reviewer findings to relevant builders by file ownership.
 
     if outer_cycle < MAX_OUTER_CYCLES:
       Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Review FAIL. Refreshing agents for cycle {outer_cycle + 1}..."
-
-      ## Refresh all agents before next cycle — fresh context windows
-      REFRESH_AGENTS(
-        cycle_number = outer_cycle + 1,
-        reviewer_findings_by_builder,
-        pr_number,
-        baseline,
-        partitions,
-        contract_content,
-        verifier_discovery
-      )
-
-      discard_streak_per_builder = {}
+      REFRESH_AGENTS(cycle_number = outer_cycle + 1, with reviewer findings routed to builders)
 
     outer_cycle += 1
 
-// If we get here, all cycles exhausted
+// All cycles exhausted
 Tell user: "{MAX_OUTER_CYCLES} cycles exhausted. PR #{pr_number} exists but has unresolved findings."
 ABORT("All cycles exhausted.")
 ```

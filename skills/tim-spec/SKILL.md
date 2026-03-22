@@ -1,6 +1,7 @@
 ---
 name: tim-spec
 description: Use when starting a new feature - generates a structured spec through guided brainstorming that can be consumed by tim-loop
+effort: max
 ---
 
 # Tim Spec — Feature Specification Generator
