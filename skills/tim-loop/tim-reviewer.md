@@ -140,21 +140,32 @@ When assigned a "Review PR" task:
 2. **Read the PR description:** `gh pr view {PR_NUMBER}`
 3. **Check commit hygiene:** `gh pr view {PR_NUMBER} --json commits --jq '.commits[].messageHeadline'`
    - Verify conventional commit messages: `feat:`, `fix:`, `test:`, `refactor:`
-4. **Review against spec by priority:**
+4. **Wait for CI checks and report failures:**
+   - Run: `gh pr checks {PR_NUMBER} --watch --fail-fast`
+     - If the command times out (>10 minutes), report CI as BLOCKING with category `ci-timeout`
+   - If any checks fail, run: `gh pr checks {PR_NUMBER} --json name,state,link --jq '.[] | select(.state != "SUCCESS" and .state != "SKIPPED")'`
+   - Each failing CI check becomes a BLOCKING finding:
+     ```
+     { severity: "BLOCKING", category: "ci-failure", check_name: "build", state: "FAILURE", url: "https://...", description: "CI check 'build' failed", builder: null }
+     ```
+   - For CI failures that map to specific files (e.g., lint/typecheck), inspect the check logs
+     via `gh run view {RUN_ID} --log-failed` and set `builder` to the owning builder
+   - CI must be green for a PASS verdict. A PR with failing CI is always FAIL regardless of code review.
+5. **Review against spec by priority:**
    - **P0 requirements:** Each must be implemented AND tested. Missing P0 = BLOCKING.
    - **P1 requirements:** Each should be implemented and tested. Missing P1 = NON-BLOCKING.
    - **P2 requirements:** Nice to have. Missing P2 = OBSERVATION (document in PR).
-5. **Check code quality:**
+6. **Check code quality:**
    - Follows existing codebase patterns?
    - No security vulnerabilities (OWASP top 10)?
    - No scope creep (features not in spec)?
    - Clean, maintainable code?
    - Proper error handling at system boundaries?
-6. **Visual verification** (for UI changes):
+7. **Visual verification** (for UI changes):
    - Request screenshots from the verifier via SendMessage if the PR touches UI
    - "REQUEST_SCREENSHOT: Please capture /page-path and send me the file path"
    - Review the screenshot for visual correctness
-7. **Render verdict.**
+8. **Render verdict.**
 
 Foundation: Use superpowers:requesting-code-review as your review methodology.
 
@@ -193,6 +204,8 @@ TaskUpdate:
     prognosis: null,
     blocking_count: 0,
     non_blocking_count: 0,
+    ci_status: "pass",
+    ci_checks: { total: 4, passed: 4, failed: 0, pending: 0 },
     p0_coverage: "5/5",
     p1_coverage: "3/3",
     p2_coverage: "1/2",
@@ -205,12 +218,15 @@ On FAIL, include structured findings the orchestrator can route by builder:
   metadata: {
     verdict: "FAIL",
     prognosis: "FIXABLE",
-    blocking_count: 2,
+    blocking_count: 3,
     non_blocking_count: 1,
+    ci_status: "fail",
+    ci_checks: { total: 4, passed: 2, failed: 2, pending: 0 },
     p0_coverage: "3/5",
     p1_coverage: "2/3",
     p2_coverage: "0/2",
     findings: [
+      { severity: "BLOCKING", category: "ci-failure", check_name: "build", state: "FAILURE", url: "https://github.com/.../actions/runs/123", description: "CI check 'build' failed", builder: null },
       { severity: "BLOCKING", category: "missing-p0", file: "src/auth/jwt.ts", line: 42, description: "JWT refresh not implemented", builder: "builder-1" },
       { severity: "BLOCKING", category: "missing-test", file: "src/payments/refund.ts", line: 15, description: "No test for refund edge case", builder: "builder-2" },
       { severity: "NON-BLOCKING", category: "naming", file: "src/api/routes.ts", line: 8, description: "Route naming inconsistent with codebase convention", builder: "builder-1" }
@@ -224,6 +240,10 @@ Detailed findings:
 ```
 ## Review Cycle {N} Findings
 
+### CI FAILURES (must fix — CI must be green)
+- ci-failure check_name -- "State: FAILURE, URL: https://..." -> Inspect logs, fix root cause
+  (If logs map to specific files, include file:line and owning builder)
+
 ### BLOCKING (must fix)
 - severity/category file:line -- Description -> Suggested action
 
@@ -232,6 +252,10 @@ Detailed findings:
 
 ### OBSERVATIONS
 - Notes for future iterations (not actionable in this cycle)
+
+### CI STATUS
+- Checks: {passed}/{total} passed, {failed} failed
+- Failing checks: {check_name_1} (FAILURE), {check_name_2} (FAILURE)
 
 ### PRIORITY COVERAGE
 - P0: 5/5 implemented and tested
@@ -250,6 +274,7 @@ Detailed findings:
 ### Severity Guidelines
 
 **BLOCKING (must fix before merge):**
+- Failing CI checks (CI must be green for PASS verdict)
 - Missing P0 spec requirement
 - Security vulnerability
 - Broken existing functionality (guard regression)

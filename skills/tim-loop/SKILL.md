@@ -455,17 +455,38 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     description: |
       Review PR #{pr_number} against the spec.
       Cycle {outer_cycle} of {MAX_OUTER_CYCLES}.
+
+      ## CI Checks (mandatory — do this FIRST)
+
+      1. Wait for CI: `gh pr checks {PR_NUMBER} --watch --fail-fast`
+         - Timeout after 10 minutes — if still pending, report as BLOCKING with category `ci-timeout`
+      2. If any checks fail: `gh pr checks {PR_NUMBER} --json name,state,link --jq '.[] | select(.state != "SUCCESS" and .state != "SKIPPED")'`
+      3. For each failing check, inspect logs: `gh run view {RUN_ID} --log-failed`
+         - Map failures to owning builders by file path when possible
+      4. Each failing CI check = a BLOCKING finding (category: "ci-failure")
+      5. CI must be fully green for a PASS verdict
+
+      ## Code Review
+
       Check every spec requirement. Use structured findings.
-      Report verdict, prognosis, finding count, and findings in task metadata:
-        metadata: { verdict: "PASS"|"FAIL", prognosis: "...", blocking_count: N, findings: [...] }
+
+      Report verdict, prognosis, CI status, finding count, and findings in task metadata:
+        metadata: {
+          verdict: "PASS"|"FAIL",
+          prognosis: "...",
+          blocking_count: N,
+          ci_status: "pass"|"fail"|"timeout",
+          ci_checks: { total: N, passed: N, failed: N, pending: N },
+          findings: [...]
+        }
     owner: reviewer
 
   Wait for reviewer to complete review task.
-  Read task metadata for: verdict, prognosis.
+  Read task metadata for: verdict, prognosis, ci_status, ci_checks.
   reviewer_findings = task.metadata.findings
 
   if verdict == "PASS":
-    Tell user: "Review PASS. PR #{pr_number} ready for human review."
+    Tell user: "Review PASS (CI: {ci_checks.passed}/{ci_checks.total} green). PR #{pr_number} ready for human review."
     ## Log final state to TSV
     append_tsv_row(outer_cycle, "review", 0, feature_metric, "pass", "PASS", "review approved")
     Tell user final metrics summary if metric_mode == "metric":
@@ -479,7 +500,13 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     if prognosis == "NEEDS_HUMAN":
       ABORT("Reviewer reports issue needing human intervention.")
 
+    ## Report CI status to user when CI contributed to the failure
+    ci_failures = [f for f in reviewer_findings if f.category == "ci-failure" or f.category == "ci-timeout"]
+    if ci_failures:
+      Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: CI failing ({ci_checks.failed} check(s)). Routing to builders..."
+
     ## Route reviewer findings to relevant builders by file ownership.
+    ## CI failures with builder == null are routed to builder-1 (default owner for unroutable items).
 
     if outer_cycle < MAX_OUTER_CYCLES:
       Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Review FAIL. Refreshing agents for cycle {outer_cycle + 1}..."
@@ -686,7 +713,9 @@ One line per phase transition:
 - "Cycle 1/3: Integration verify PASS. Metric: 72.3 → 85.1 (+12.8). Publishing..."
 - "Cycle 1/3: Integration completeness FAIL: 2 stubs, 1 dead export, 1/3 journeys. Routing fixes..."
 - "Cycle 1/3: Builder-2 hit 5 discards. Attempting radical rethink..."
-- "Cycle 1/3: Review FAIL (1 blocking). Refreshing agents for cycle 2..."
+- "Cycle 1/3: Review PASS (CI: 4/4 green). PR #47 ready for human review."
+- "Cycle 1/3: CI failing (2 check(s)). Routing to builders..."
+- "Cycle 1/3: Review FAIL (1 blocking, 2 CI failures). Refreshing agents for cycle 2..."
 - "Cycle 2/3: Build complete. Integrating..."
 
 ## Skill Dependencies
