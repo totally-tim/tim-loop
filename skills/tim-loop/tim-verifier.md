@@ -101,14 +101,14 @@ This is the **full verification** that determines if the cycle passes.
 
 Run in the **integration worktree**.
 
-Two-phase verification:
+Three-phase verification:
 
 **Phase 1: Guard Check (non-negotiable)**
 Run all guard commands from the spec's `## Guards` section. If no Guards section,
 run the standard guards: typecheck, lint, existing tests, build.
 
 Guard checks verify that existing functionality is not broken.
-If ANY guard fails: verdict = FAIL immediately. Do not proceed to Phase 2.
+If ANY guard fails: verdict = FAIL immediately. Do not proceed to Phase 2 or 3.
 
 **Phase 2: Feature Verification (tracked)**
 Run Tier 1-3 checks for NEW functionality:
@@ -120,7 +120,19 @@ Run Tier 1-3 checks for NEW functionality:
 If metric_mode == "metric": run the Verify Command and extract the metric value.
 Compare to baseline to compute metric_delta.
 
-Report both guard status and feature status separately in metadata.
+If Phase 2 FAILs: verdict = FAIL. Do not proceed to Phase 3.
+
+**Phase 3: Integration Completeness (top-down)**
+Only runs when Phase 1 AND Phase 2 both pass. This catches the "green tests, broken app" problem.
+
+3a. **Stub/placeholder scan** — grep diff for TODO, FIXME, empty functions, hardcoded mocks
+3b. **Dead export detection** — check new exports are actually imported somewhere
+3c. **Connection verification** — use architect's `## Connections` map to verify seams are wired
+3d. **User journey smoke tests** — execute spec's `## User Journeys` in a real browser
+
+See `tim-verify.md` Phase 3 for detailed instructions on each sub-check.
+
+Report guard status, feature status, AND integration completeness separately in metadata.
 
 #### Mode 3: Per-Builder Verification (on-demand)
 
@@ -221,14 +233,21 @@ TaskUpdate:
     guard_status: "pass",
     feature_metric: 85.1,
     metric_delta: +12.8,
+    integration_completeness: {
+      stubs_found: 0,
+      dead_exports_found: 0,
+      missing_connections: 0,
+      journeys_passed: 3,
+      journeys_total: 3
+    },
     failure_keys: [],
     prognosis: null,
-    checks_run: "guards (4/4 pass), typecheck, lint, 47 tests, build, e2e, plan adherence",
+    checks_run: "guards (4/4), feature (47 tests, build, e2e), integration (0 stubs, 0 dead, 3/3 journeys)",
     baseline_excluded: 2
   }
 ```
 
-or on FAIL:
+or on FAIL (Phase 3 failures):
 
 ```
 TaskUpdate:
@@ -236,13 +255,25 @@ TaskUpdate:
   status: "completed"
   metadata: {
     verdict: "FAIL",
-    guard_status: "fail",
-    feature_metric: null,
-    metric_delta: null,
-    failure_keys: ["guard/typecheck/TS2345:src/payment.ts:42", "guard/test/auth.test.ts:15"],
+    guard_status: "pass",
+    feature_metric: 85.1,
+    metric_delta: +12.8,
+    integration_completeness: {
+      stubs_found: 1,
+      dead_exports_found: 1,
+      missing_connections: 0,
+      journeys_passed: 1,
+      journeys_total: 3,
+      journey_screenshots: ["verify-create-invoice-step2.png"]
+    },
+    failure_keys: [
+      "integration/stub/src/api/invoices.ts:42:TODO",
+      "integration/dead-export/src/components/InvoiceForm.tsx:InvoiceForm",
+      "integration/journey/create-invoice:2:form-not-rendered"
+    ],
     prognosis: "FIXABLE",
-    checks_run: "guards (2/4 fail — stopped at guard phase)",
-    baseline_excluded: 0
+    checks_run: "guards (4/4), feature (47 tests, build), integration (1 stub, 1 dead, 1/3 journeys)",
+    baseline_excluded: 2
   }
 ```
 
@@ -261,6 +292,13 @@ Detailed findings using this format:
 ### PLAN ADHERENCE
 - requirement "X" -- Status: implemented/missing/partial
 - scope creep: file:line -- Description (if any)
+
+### INTEGRATION COMPLETENESS
+- STUBS: file:line -- Pattern found [key: integration/stub/src/api/invoices.ts:42:TODO]
+- DEAD EXPORTS: file:export -- Not imported anywhere [key: integration/dead-export/src/Form.tsx:Form]
+- MISSING CONNECTIONS: source→target -- Description [key: integration/connection/...]
+- JOURNEY FAILURES: journey:step -- Expected vs actual [key: integration/journey/...]
+  Screenshot: verify-{journey}-step{N}.png
 
 ### METRIC
 Current: {value} | Baseline: {baseline} | Delta: {delta}

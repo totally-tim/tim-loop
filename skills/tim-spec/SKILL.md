@@ -64,14 +64,73 @@ Read the gstack design doc and test plan. Extract and transform:
 
 Invoke `superpowers:brainstorming` to explore the idea with the user. Follow the brainstorming process exactly (one question at a time, propose approaches, present design, get approval).
 
+### Step 1c: Co-create User Journeys with the User
+
+**This step runs after brainstorming/import review, before codebase exploration.**
+
+User journeys are the top-down integration tests that prevent the "green tests, broken app"
+problem. They must be co-created with the user — not auto-generated — because only the user
+knows the expected navigation paths and product behavior.
+
+1. **Explain the purpose:**
+   > "Now let's define how a user would actually reach and use this feature.
+   > These journeys will be tested in a real browser during verification to catch
+   > integration issues like missing pages, unhooked features, or partial implementations."
+
+2. **For each acceptance criterion**, ask the user:
+   - "Starting from where in the app, how would a user reach this?"
+   - "What would they click/navigate through?"
+   - "What should they see at each step?"
+   - "What action triggers the acceptance criterion, and what's the expected result?"
+
+3. **Draft each journey** as a sequence of steps with checkpoints:
+   ```
+   Journey: Create an invoice
+   Start: http://localhost:3000 (app home)
+   Steps:
+     1. Navigate: Click "Dashboard" in sidebar
+        Checkpoint: Dashboard page loads, "Invoices" section visible
+     2. Navigate: Click "Invoices" → Click "Create Invoice" button
+        Checkpoint: Invoice creation form renders with amount, recipient, due date fields
+     3. Action: Fill amount=100, recipient=test@example.com, due date=tomorrow → Click "Submit"
+        Checkpoint: Success toast appears, redirected to invoice list, new invoice visible
+   ```
+
+4. **Review with the user.** Present all journeys and get explicit confirmation:
+   - "Do these journeys cover the critical paths?"
+   - "Are there flows I'm missing?"
+   - "Is the starting point correct for each?"
+
+5. **For API-only features** (no UI): convert journeys to API call sequences:
+   ```
+   Journey: Rate limit enforcement
+   Steps:
+     1. Action: Send 100 POST requests to /api/invoices with valid auth
+        Checkpoint: All return 200
+     2. Action: Send 1 more POST request
+        Checkpoint: Returns 429 with Retry-After header
+   ```
+
+6. **For gstack import mode:** also extract user journeys from the test plan's
+   "Key Interactions to Verify" and "Critical Paths" sections, then present
+   to the user for review and refinement.
+
 ### Step 2: Explore the Codebase
 
-After brainstorming approval (or gstack import review), explore the relevant parts of the codebase to populate the Architecture section with specifics: file paths, existing patterns, naming conventions, and relevant abstractions. Do not leave Architecture vague.
+After user journey approval, explore the relevant parts of the codebase to populate
+the Architecture section with specifics: file paths, existing patterns, naming
+conventions, and relevant abstractions. Do not leave Architecture vague.
 
 Additionally, discover information for the metric sections:
 - **Metric:** Identify existing test commands, coverage tools, or measurable signals in the project.
 - **Guards:** Identify the project's typecheck, lint, test, and build commands.
 - **Verify Command:** Construct a mechanical command that extracts the metric value.
+
+Also discover information relevant to user journeys:
+- **App entry point:** What URL does the dev server serve? (e.g., `http://localhost:3000`)
+- **Dev server command:** How to start it? (e.g., `npm run dev`)
+- **Existing navigation:** What navigation patterns exist (sidebar, top nav, routing)?
+- **Auth requirements:** Does the app require login? What test credentials exist?
 
 ### Step 3: Generate Spec
 
@@ -88,6 +147,7 @@ Recommended but not required:
 - Metric (mechanical, fast, outputs a number)
 - Guards (baseline invariants)
 - Verify Command (extracts the metric)
+- User Journeys (end-to-end browser/API flows co-created with user)
 
 ### Step 5: Save Spec
 
@@ -202,6 +262,33 @@ Custom verification steps beyond the default 3-tier verification.
 - Check that Y is true in the browser at /path
 - Skip Playwright (no frontend changes)
 
+## User Journeys (recommended)
+End-to-end flows that verify the feature works from a real user's perspective.
+These are tested in a browser during integration completeness verification.
+Co-created with the user during spec generation — never auto-generated.
+
+App entry: http://localhost:<port>
+Dev server: `<command to start dev server>`
+Auth: <none | test credentials | login flow>
+
+### Journey 1: <descriptive name>
+- [ ] Step 1 — Navigate: <where to click/navigate>
+  Checkpoint: <what should be visible/true>
+- [ ] Step 2 — Navigate: <next navigation step>
+  Checkpoint: <what should be visible/true>
+- [ ] Step 3 — Action: <user action that triggers the feature>
+  Checkpoint: <expected result — maps to an acceptance criterion>
+
+### Journey 2: <descriptive name>
+- [ ] Step 1 — Navigate: ...
+  Checkpoint: ...
+{Repeat for each critical path}
+
+For API-only features, use API call sequences instead of browser navigation:
+### Journey 1: <descriptive name>
+- [ ] Step 1 — Request: POST /api/endpoint with {payload}
+  Checkpoint: Response 200 with {expected body}
+
 ## Out of Scope
 What this feature explicitly does NOT include.
 Prevents scope creep during the automated loop.
@@ -226,3 +313,5 @@ If the user doesn't specify priorities, propose a priority assignment and get co
 - **Never omit priorities.** Every requirement must have a `[P0]`/`[P1]`/`[P2]` tag.
 - **Never fabricate metric commands.** If you can't discover a mechanical metric during codebase exploration, leave the Metric/Guards/Verify Command sections empty rather than guessing. Ask the user if they know of one.
 - **Never treat gstack import as a shortcut.** Imported artifacts still need codebase exploration (Step 2) and user review. gstack provides design intent; the spec needs implementation-level detail.
+- **Never auto-generate user journeys.** User journeys must be co-created with the user. Only the user knows the expected navigation paths and product behavior. Present drafts for review, but never save without the user confirming the flows are correct.
+- **Never skip user journeys for features with UI.** If the feature has any user-facing component, user journeys are critical for catching integration issues. For API-only features, use API call sequences instead.

@@ -22,9 +22,11 @@ THE LOOP (up to 3 cycles):
                   Atomic iteration inspired by autoresearch.
   2. INTEGRATE    Reviewer merges builder branches into integration, one at a time.
                   Guard check after each merge. Identifies which merge broke what.
-  3. VERIFY       Verifier runs full verification on integrated build.
+  3. VERIFY       Three-phase verification on integrated build:
                   Phase 1: Guard check (baseline invariants, non-negotiable).
                   Phase 2: Feature verification (metric tracking, plan adherence).
+                  Phase 3: Integration completeness (stubs, dead code, connections,
+                           user journey smoke tests in real browser).
   4. PUBLISH      Push integration branch, create/update PR with priority checklist.
   5. REVIEW       Reviewer checks PR diff against spec by priority.
 
@@ -39,7 +41,7 @@ THE LOOP (up to 3 cycles):
 |-------|-----|--------|
 | Architect | Explore codebase, write shared contracts to integration branch, partition work into N scopes | Writes shared contracts. Shuts down after planning. |
 | Builder(s) | Implement partition with keep/discard iteration in isolated worktree | Read/write scoped to partition files in own worktree. |
-| Verifier | Run guard checks + feature verification, validate plan adherence, extract metrics | Read-only. Cannot edit files. Operates across worktrees. |
+| Verifier | Three-phase verification: guards, feature checks, integration completeness (stubs, dead code, connections, user journeys) | Read-only. Cannot edit files. Operates across worktrees. |
 | Reviewer | Merge builder branches into integration, review PR diff against spec | Git merge + GitHub CLI. Can request screenshots. |
 
 The orchestrator is a **thin coordinator** — it creates tasks, reads task metadata, and makes decisions. It never reads code or runs tests. Progress is visible in real time via `Ctrl+T` (task list).
@@ -93,6 +95,53 @@ Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch) an
 | Metric | Not tracked | Tracked (higher/lower is better) |
 
 **Smart stuck escalation:** After 5 consecutive discards, instead of aborting immediately, the builder gets one "radical rethink" attempt — re-read everything, try the opposite approach, combine near-misses. Only aborts if the rethink also fails.
+
+## Integration Completeness Verification (Phase 3)
+
+The biggest pain point in large implementations: code passes every test but the feature is broken when you actually try to use it. Phase 3 catches this by verifying top-down — from the user's perspective.
+
+**Phase 3 runs after guards and feature tests pass.** It catches:
+
+| Check | What it finds | Example |
+|-------|--------------|---------|
+| **Stub scan** | TODO, FIXME, empty functions, hardcoded mocks | `createInvoice()` returns `null` instead of calling the API |
+| **Dead export detection** | Components/functions built but never used | `InvoiceForm.tsx` exists but isn't rendered on any page |
+| **Connection verification** | Cross-partition seams not wired up | API endpoint exists but frontend never calls it |
+| **User journey smoke tests** | Feature unreachable through normal navigation | Invoice page exists but there's no link to it in the sidebar |
+
+### User Journeys
+
+The most powerful check. Tim-spec co-creates these with you during spec generation:
+
+```markdown
+## User Journeys
+App entry: http://localhost:3000
+Dev server: `npm run dev`
+
+### Journey 1: Create an invoice
+- [ ] Step 1 — Navigate: Click "Dashboard" in sidebar
+  Checkpoint: Dashboard loads, "Invoices" section visible
+- [ ] Step 2 — Navigate: Click "Invoices" → "Create Invoice"
+  Checkpoint: Invoice form renders with amount, recipient, due date fields
+- [ ] Step 3 — Action: Fill form, click Submit
+  Checkpoint: Success toast, redirected to invoice list, new invoice visible
+```
+
+During verification, the verifier literally walks through these steps in a browser, taking screenshots at each checkpoint. If any step fails — the form doesn't render, the button is missing, the page 404s — it's caught before the PR is created.
+
+### Connection Map
+
+The architect produces a connection map in the implementation contract, documenting every cross-partition seam:
+
+```
+| Source | Target | Connection Type | What to verify |
+|--------|--------|-----------------|----------------|
+| POST /api/invoices | InvoiceForm submit | API call | Frontend calls endpoint |
+| InvoiceForm component | /invoices/new page | Rendering | Component rendered on page |
+| /invoices/new route | Sidebar nav | Navigation | Route linked in sidebar |
+```
+
+The verifier checks each connection with targeted greps and browser verification.
 
 ## gstack Integration (tim-spec)
 
@@ -261,6 +310,9 @@ Other optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessm
 - **Reviewer as integrator** — reviewer merges builder branches one at a time with guard checks after each merge. Identifies which merge broke what.
 - **gstack import** — tim-spec can consume gstack design docs and test plans as starting points. Brainstorming remains the default.
 - **Metric-driven specs** — optional `## Metric`, `## Guards`, `## Verify Command` sections enable progressive improvement tracking. Falls back to pass/fail without them.
+- **Integration completeness verification** — Phase 3 catches the "green tests, broken app" problem: stub scan, dead export detection, connection verification, and user journey smoke tests in a real browser.
+- **User journey smoke tests** — co-created with the user during spec generation. Verifier walks through each journey in a browser, taking screenshots at every checkpoint. Catches missing pages, unhooked features, and broken navigation.
+- **Connection mapping** — architect maps every cross-partition seam (API↔UI, component↔page, route↔navigation). Verifier checks each connection during integration completeness.
 - **TSV progress log** — every builder iteration, integration result, and review outcome logged to `tim-loop-results.tsv` for observability.
 - **Architect-driven partitioning** — dedicated agent explores the codebase, writes shared contracts to disk, and splits work into N non-overlapping file scopes.
 - **Parallel builders** — N builders work simultaneously, each with a focused context window scoped to their partition.
@@ -315,7 +367,7 @@ skills/
 │   ├── tim-builder.md     # Builder agent prompt + reference
 │   ├── tim-verifier.md    # Verifier agent prompt + reference
 │   ├── tim-reviewer.md    # Reviewer agent prompt + reference
-│   ├── tim-verify.md      # Two-phase verification strategy (guard + feature)
+│   ├── tim-verify.md      # Three-phase verification strategy (guard + feature + integration completeness)
 │   └── README.md          # Detailed docs
 ├── tim-spec/
 │   └── SKILL.md           # Spec generation skill (brainstorming + gstack import)

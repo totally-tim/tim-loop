@@ -58,6 +58,7 @@ Extract these optional sections:
 - `## Metric` — mechanical metric command, direction, baseline value
 - `## Guards` — baseline invariant commands (must exit 0)
 - `## Verify Command` — shell command to extract metric value
+- `## User Journeys` — end-to-end browser/API flows for integration smoke tests
 
 If requirements lack priority tags, warn the user and default all to `[P0]`.
 
@@ -125,6 +126,8 @@ For each agent, fill in the placeholders from their prompt template with:
 - `{INTEGRATION_WORKTREE}` — path to the integration worktree
 - `{VERIFIER_DISCOVERY}` — "None" on initial spawn; filled from baseline task metadata on refresh
 - `{BUILDER_WORKTREES}` — "None" on initial spawn; filled after builder worktrees are created
+- `{USER_JOURNEYS}` — from spec's `## User Journeys` section, or "None"
+- `{CONNECTIONS_MAP}` — from architect contract's `## Connections` section (filled after architect phase), or "None"
 - Other placeholders filled as the loop progresses
 
 The architect will study the codebase and produce the implementation contract.
@@ -160,6 +163,7 @@ Wait for all 3 agents to report ready before proceeding to the Architect Phase.
    - Are partition file sets non-overlapping?
    - Were shared contracts actually written to disk?
    - Is the partition count within max_builders?
+   - Does it include a `## Connections` section? (required even if empty)
    If not: reject with specific feedback (SendMessage type: plan_approval_response, approve: false).
    If acceptable: approve (approve: true).
 
@@ -167,6 +171,7 @@ Wait for all 3 agents to report ready before proceeding to the Architect Phase.
    - `partitions` — array of { name, files, requirements, dependencies }
    - `contract_content` — full text of .tim-loop-contract.md
    - `partition_count` — number of partitions
+   - `connections_map` — the `## Connections` section content (for verifier Phase 3c)
 
 5. **Create per-builder worktrees:** For each partition, create a worktree branching from the integration branch:
 
@@ -422,7 +427,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     Tell user: "Guard failed after merging {failed_builder}. Routing fix..."
     ## Send fix task to that builder, re-attempt integration after fix
 
-  ## 3. VERIFY INTEGRATION
+  ## 3. VERIFY INTEGRATION (three-phase)
   Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Verifying integrated build..."
 
   TaskCreate:
@@ -433,18 +438,32 @@ while outer_cycle <= MAX_OUTER_CYCLES:
       Baseline failures (ignore these): {baseline}
       Baseline metric: {baseline_metric}
 
-      Run full verification:
-      1. GUARD CHECK: Run all guard commands. ALL must pass.
-         {GUARD_COMMANDS or "typecheck + lint + existing tests + build"}
-      2. FEATURE VERIFICATION: Run Tier 1-3 checks for new functionality.
-      3. If metric_mode == "metric": Run verify command, extract metric value.
-      4. PLAN ADHERENCE: Check implementation against spec requirements.
+      Run THREE-PHASE verification:
+
+      PHASE 1 — GUARD CHECK: Run all guard commands. ALL must pass.
+        {GUARD_COMMANDS or "typecheck + lint + existing tests + build"}
+        If any guard fails → FAIL immediately, skip Phase 2+3.
+
+      PHASE 2 — FEATURE VERIFICATION: Run Tier 1-3 checks for new functionality.
+        If metric_mode == "metric": Run verify command, extract metric value.
+        PLAN ADHERENCE: Check implementation against spec requirements.
+        If Phase 2 fails → FAIL, skip Phase 3.
+
+      PHASE 3 — INTEGRATION COMPLETENESS (only if Phase 1+2 pass):
+        3a. Stub/placeholder scan: grep diff for TODO, FIXME, empty functions, hardcoded mocks
+        3b. Dead export detection: check new exports are actually imported somewhere
+        3c. Connection verification using architect contract connections map:
+            {CONNECTIONS_MAP}
+        3d. User journey smoke tests (execute in browser):
+            {USER_JOURNEYS}
+            Take screenshots at each checkpoint as evidence.
 
       Report in task metadata: {
         verdict: "PASS"|"FAIL",
         guard_status: "pass"|"fail",
         feature_metric: N,
         metric_delta: +/-N (compared to baseline),
+        integration_completeness: { stubs_found, dead_exports_found, missing_connections, journeys_passed, journeys_total, journey_screenshots },
         failure_keys: [...],
         prognosis: "FIXABLE"|"NEEDS_HUMAN"|"UNCLEAR"
       }
@@ -743,7 +762,7 @@ metric_mode == "metric", or a pass/fail count when metric_mode == "pass_fail".
 
 1. **Delegate everything.** Never read files, run commands, or analyze output. Agents do all work.
 2. **Tasks are the state machine.** Create tasks with dependencies, read task metadata for decisions.
-3. **Never skip phases.** ARCHITECT -> BUILD (keep/discard) -> INTEGRATE -> VERIFY -> PUBLISH -> REVIEW. Always.
+3. **Never skip phases.** ARCHITECT -> BUILD (keep/discard) -> INTEGRATE -> VERIFY (guard + feature + integration completeness) -> PUBLISH -> REVIEW. Always.
 4. **Abort on NEEDS_HUMAN.** Immediately. No retries (except radical rethink for stagnant builders).
 5. **Escalate before aborting.** On builder stagnation: try radical rethink once before marking NEEDS_HUMAN.
 6. **Preserve resume state on abort.** Always write `.tim-loop-resume.json` with per-partition state and worktree paths.
@@ -758,7 +777,10 @@ One line per phase transition:
 - "Architect approved. Creating 3 builder worktrees..."
 - "Cycle 1/3: Build complete (builder-1: 5 keeps/2 discards, builder-2: 3 keeps/0 discards)..."
 - "Cycle 1/3: Integrating builder branches..."
+- "Cycle 1/3: Guards PASS. Feature verify PASS. Running integration completeness..."
+- "Cycle 1/3: Integration completeness: 0 stubs, 0 dead exports, 3/3 journeys PASS."
 - "Cycle 1/3: Integration verify PASS. Metric: 72.3 → 85.1 (+12.8). Publishing..."
+- "Cycle 1/3: Integration completeness FAIL: 2 stubs, 1 dead export, 1/3 journeys. Routing fixes..."
 - "Cycle 1/3: Builder-2 hit 5 discards. Attempting radical rethink..."
 - "Cycle 1/3: Review FAIL (1 blocking). Refreshing agents for cycle 2..."
 - "Cycle 2/3: Build complete. Integrating..."

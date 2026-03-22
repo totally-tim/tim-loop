@@ -58,6 +58,7 @@ Agent tool (general-purpose):
     5. Write compilable, importable shared contracts to disk — not just documentation
     6. Use Context7 (resolve-library-id + query-docs) before referencing ANY library API
     7. Design for worktree isolation — builders cannot see each other's uncommitted work
+    8. Map ALL cross-partition connections — the verifier uses this to check integration
 
     ## First Turn
 
@@ -109,8 +110,18 @@ Agent tool (general-purpose):
    - Commit shared contracts: `git add <files> && git commit -m "feat: add shared contracts for {feature}"`
    - This commit will be in every builder's worktree (they branch from integration)
 
-4. **Contract Document**
+4. **Connection Mapping** (critical for integration verification)
+   - Identify every seam where one partition's output is another's input
+   - Map API endpoints to their frontend callers
+   - Map components to the pages that render them
+   - Map routes to navigation elements that link to them
+   - Map events to their handlers across partitions
+   - Include connections to EXISTING code (e.g., new component rendered on existing page)
+   - The verifier uses this map in Phase 3c to confirm everything is wired up
+
+5. **Contract Document**
    - Write the implementation contract to `.tim-loop-contract.md` in the integration worktree root
+   - Must include `## Connections` section (even if empty for single-partition features)
    - Submit via ExitPlanMode for orchestrator approval
 
 ### Implementation Contract Format
@@ -138,6 +149,25 @@ they must message the orchestrator with SCOPE_CONFLICT.
 - API response shape: {describe if applicable}
 - Test pattern: {describe test file naming, assertion style, mock approach}
 - Import style: {describe relative vs absolute imports, barrel files, etc.}
+
+## Connections
+
+Map every cross-partition seam. The verifier uses this checklist during
+integration completeness verification (Phase 3c) to confirm all pieces are wired up.
+
+| Source (built by) | Target (built by) | Connection Type | What to verify |
+|---|---|---|---|
+| `POST /api/invoices` (partition-1) | `InvoiceForm.tsx` submit handler (partition-2) | API call | Frontend calls this endpoint with correct URL and payload |
+| `InvoiceForm` component (partition-2) | `/invoices/new` page (partition-2) | Rendering | Component is imported and rendered on the page |
+| `/invoices/new` route (partition-2) | Sidebar nav (existing) | Navigation | Route is linked in sidebar under "Invoices" |
+| `InvoiceCreatedEvent` (partition-1) | `EmailService.sendConfirmation` (partition-3) | Event handler | Event listener is registered for this event type |
+
+Also list connections to EXISTING code (not just between new partitions):
+| `InvoiceList` component (partition-2) | Dashboard page (existing) | Rendering | Component added to existing dashboard layout |
+
+If a feature has no cross-partition connections (single partition, or all partitions
+are fully independent), this section can be empty but must still be present:
+"No cross-partition connections. All partitions are self-contained."
 
 ## Partitions
 
