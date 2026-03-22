@@ -10,11 +10,11 @@ description: Use when you have a feature spec and want to automatically build, v
 ## Overview
 
 Tim Loop takes a feature spec (.md file) and runs an automated development loop:
-1. Creates an isolated git worktree
-2. Spawns a multi-agent team: architect (planning), N builders (parallel implementation), verifier, reviewer
+1. Creates isolated git worktrees — one integration branch + one per builder
+2. Spawns a multi-agent team: architect (planning), N builders (parallel, isolated), verifier, reviewer (integrator)
 3. Uses a shared task list for coordination — agents claim tasks, mark progress, and the user sees real-time status via `Ctrl+T`
-4. Runs up to N outer cycles of build -> verify -> publish -> review (default 3)
-5. Each verify step has up to M inner fix retries (default 5)
+4. Builders work in isolation with autoresearch-style keep/discard iteration (atomic commits, metric-driven decisions)
+5. Reviewer merges builder branches into the integration branch, runs integration verification, and reviews the PR
 6. Ends with a PR ready for human review (or an abort with resume state)
 
 You (the orchestrator) are a **thin coordinator**. You create tasks, assign them,
@@ -26,15 +26,17 @@ run tests, analyze diffs, or generate fix suggestions. Agents do all real work.
 | Setting | Default | Spec Override Key |
 |---------|---------|-------------------|
 | MAX_OUTER_CYCLES | 3 | `max_outer_cycles` |
-| MAX_INNER_RETRIES | 5 | `max_inner_retries` |
+| MAX_BUILDER_ITERATIONS | 8 | `max_builder_iterations` |
 | REQUIRE_PLAN_APPROVAL | true (cycle 1 only) | `require_plan_approval` |
 | SKIP_BASELINE | false | `skip_baseline` |
 | BUILDER_COUNT | auto | `builder_count` |
 | MAX_BUILDERS | 5 | `max_builders` |
+| METRIC_MODE | auto | `metric_mode` |
 
 `builder_count: auto` means the architect agent decides based on codebase analysis.
 Set to an integer to force a specific number of builders.
 `max_builders` caps the architect's recommendation (safety valve for token costs).
+`METRIC_MODE: auto` means: use metric-driven keep/discard if the spec has a `## Metric` section; fall back to pass/fail if not.
 
 ## SETUP Phase
 
@@ -53,27 +55,36 @@ Extract these optional sections:
 - `## Risk Assessment` — blast radius and risk level
 - `## Test Strategy` — test types, fixtures, mocks
 - `## Open Questions` — unknowns the builder should investigate early
+- `## Metric` — mechanical metric command, direction, baseline value
+- `## Guards` — baseline invariant commands (must exit 0)
+- `## Verify Command` — shell command to extract metric value
 
 If requirements lack priority tags, warn the user and default all to `[P0]`.
+
+Determine `metric_mode`:
+- If spec has `## Metric` AND `## Verify Command`: `metric_mode = "metric"`
+- Else: `metric_mode = "pass_fail"` (legacy behavior)
 
 Extract the feature name from the `# Feature:` heading for use as team name slug.
 Slugify: lowercase, replace spaces with hyphens, remove special characters.
 
-### Step 2: Create Worktree
+### Step 2: Create Worktrees
 
-Invoke `superpowers:using-git-worktrees` to create an isolated branch.
-All builder work happens in this worktree. Main branch stays untouched.
-Record the `base_branch` (the branch HEAD was on before worktree creation).
-
-After creating the worktree, exclude tim-loop artifacts from git tracking by
-appending to `.git/info/exclude` in the worktree:
+Create an **integration worktree** — this is the central branch where all work merges.
 
 ```bash
-echo '.tim-loop-contract.md' >> <worktree-path>/.git/info/exclude
-echo '.tim-loop-resume.json' >> <worktree-path>/.git/info/exclude
+# Create integration worktree
+git worktree add <worktree-base>/integration -b tim-loop/{feature-slug}/integration
+
+# Exclude tim-loop artifacts from git tracking
+echo '.tim-loop-contract.md' >> <integration-worktree>/.git/info/exclude
+echo '.tim-loop-resume.json' >> <integration-worktree>/.git/info/exclude
+echo 'tim-loop-results.tsv' >> <integration-worktree>/.git/info/exclude
 ```
 
-This uses the repo-local exclude file so the target project's `.gitignore` is never modified.
+Record the `base_branch` (the branch HEAD was on before worktree creation).
+
+Builder worktrees are created LATER in Step 5b, after the architect defines partitions.
 
 ### Step 3: Create Team
 
@@ -107,6 +118,13 @@ For each agent, fill in the placeholders from their prompt template with:
 - `{TEST_STRATEGY}` — from spec's `## Test Strategy` section, or "None"
 - `{BUILDER_COUNT}` — from Loop Config, or "auto"
 - `{MAX_BUILDERS}` — from Loop Config, or "5"
+- `{METRIC_MODE}` — "metric" or "pass_fail"
+- `{METRIC_COMMAND}` — from spec's `## Verify Command`, or "None"
+- `{METRIC_DIRECTION}` — from spec's `## Metric` Direction field, or "None"
+- `{GUARD_COMMANDS}` — from spec's `## Guards` section, or "None"
+- `{INTEGRATION_WORKTREE}` — path to the integration worktree
+- `{VERIFIER_DISCOVERY}` — "None" on initial spawn; filled from baseline task metadata on refresh
+- `{BUILDER_WORKTREES}` — "None" on initial spawn; filled after builder worktrees are created
 - Other placeholders filled as the loop progresses
 
 The architect will study the codebase and produce the implementation contract.
@@ -117,7 +135,7 @@ Wait for all 3 agents to report ready before proceeding to the Architect Phase.
 
 ### Step 5b: Architect Phase
 
-1. Create task for the architect:
+1. Create task for the architect (working in the integration worktree):
    ```
    TaskCreate:
      subject: "Produce implementation contract for {FEATURE_NAME}"
@@ -150,42 +168,50 @@ Wait for all 3 agents to report ready before proceeding to the Architect Phase.
    - `contract_content` — full text of .tim-loop-contract.md
    - `partition_count` — number of partitions
 
-5. **Spawn builders:** For each partition, spawn a builder agent:
+5. **Create per-builder worktrees:** For each partition, create a worktree branching from the integration branch:
+
+   ```bash
+   # For each partition:
+   git worktree add <worktree-base>/builder-{index} -b tim-loop/{feature-slug}/builder-{index} tim-loop/{feature-slug}/integration
+   ```
+
+   This ensures every builder starts with the architect's shared contracts already present.
+
+   When `partition_count == 1`: create a single builder worktree. The builder has no scope restrictions.
+
+6. **Spawn builders:** For each partition, spawn a builder agent:
    ```
    Agent tool (general-purpose):
      name: "builder-{partition_index}" (or just "builder" if partition_count == 1)
      team_name: "{TEAM_NAME}"
      description: "Build: {partition_name}"
      mode: "bypassPermissions"
-     prompt: (filled from tim-builder.md template with partition scope)
+     prompt: (filled from tim-builder.md template with partition scope + worktree path)
    ```
 
-   When `partition_count == 1`: spawn a single builder named "builder" WITHOUT
-   partition scope restrictions. This is backward-compatible with the current
-   single-builder behavior.
+   Each builder's prompt includes `{BUILDER_WORKTREE}` — the path to their isolated worktree.
 
-   When `partition_count > 1`: spawn N builders, each named "builder-{index}",
-   each with their partition scope (files, requirements) and the full contract
-   embedded in their prompt.
+7. Send `shutdown_request` to architect. Wait for confirmation.
 
-6. Send `shutdown_request` to architect. Wait for confirmation.
-
-7. Wait for all builders to report ready before starting the loop.
+8. Wait for all builders to report ready before starting the loop.
 
 ### Step 6: Baseline Verification (unless `skip_baseline` is true)
 
-Create a task for the verifier to run all Tier 1 checks on the clean worktree
+Create a task for the verifier to run all checks on the clean integration worktree
 BEFORE the builder touches anything:
 
 ```
 TaskCreate:
   subject: "Run baseline verification"
-  description: "Run all Tier 1 checks (typecheck, lint, tests, build) on the
-    clean worktree before any changes. Record which checks already fail.
+  description: "Run all guard checks and Tier 1 checks on the clean integration worktree
+    before any changes. Record which checks already fail.
     Also report the test infrastructure you discovered.
-    Report baseline and discovery as task metadata:
+    If spec has Guards section, run each guard command and record results.
+    If spec has Verify Command, run it to capture baseline metric value.
+    Report baseline, discovery, and metric baseline as task metadata:
       metadata: {
         baseline_failures: ['tier1/test/auth.test.ts:42', ...],
+        baseline_metric: 72.3,  // or null if no metric
         discovery: {
           test_runner: 'vitest',
           test_command: 'npm test',
@@ -198,12 +224,17 @@ TaskCreate:
   owner: verifier
 ```
 
-Wait for verifier to complete this task. The verifier stores baseline failures and
-discovery in the task metadata.
+Wait for verifier to complete this task.
 
-Record the baseline AND the verifier discovery. The baseline is included in all
-subsequent verify tasks. The discovery is passed to fresh verifiers on agent refresh
-so they don't need to re-discover test infrastructure.
+Record the baseline, baseline_metric, AND the verifier discovery.
+
+Initialize the TSV progress log:
+
+```
+## Write header + baseline row to tim-loop-results.tsv in integration worktree
+cycle\tbuilder\titeration\tmetric\tguard\tstatus\tdescription
+0\t-\t0\t{baseline_metric}\tpass\tbaseline\tinitial state
+```
 
 ## THE LOOP
 
@@ -211,18 +242,18 @@ so they don't need to re-discover test infrastructure.
 outer_cycle = 1
 pr_number = null
 baseline = (from Step 6, or empty if skipped)
+baseline_metric = (from Step 6 task metadata, or null)
 verifier_discovery = (from Step 6 task metadata, or empty if skipped)
-failure_history_per_builder = {}  // map: builder_name -> list of failure_key sets
+metric_history_per_builder = {}  // map: builder_name -> list of {metric, status}
+discard_streak_per_builder = {}  // map: builder_name -> consecutive discard count
 
 while outer_cycle <= MAX_OUTER_CYCLES:
 
-  ## 1. BUILD
+  ## 1. BUILD (with keep/discard iteration per builder)
   Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Starting build ({partition_count} builder(s))..."
 
   if outer_cycle == 1 and REQUIRE_PLAN_APPROVAL:
     ## PLAN APPROVAL was already handled in the Architect Phase (Step 5b).
-    ## The architect produced the plan and partitions. Builders do NOT
-    ## go through a separate plan approval — they follow the contract.
     pass
 
   ## Create parallel build tasks — one per partition
@@ -233,148 +264,254 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     task = TaskCreate:
       subject: "Build partition: {partition.name} (cycle {outer_cycle})"
       description: |
-        You are building partition "{partition.name}".
+        You are building partition "{partition.name}" in your isolated worktree.
+        Worktree path: {partition.builder_worktree}
         Your file scope: {partition.files}
         Your requirements: {partition.requirements}
         Implementation contract: {contract_content}
 
-        Create 3-6 granular sub-tasks for YOUR requirements only,
-        ordered by priority (P0 first, then P1, then P2).
-        Mark each sub-task complete as you finish it.
-        When all sub-tasks are done, mark this parent task complete.
+        ## Iteration Discipline (autoresearch-style)
+
+        For each logical change:
+        1. Make ONE atomic change (if you need "and" to describe it, split it)
+        2. Commit with conventional message
+        3. Run guard checks: {GUARD_COMMANDS or "typecheck + lint + existing tests"}
+        4. If guard FAILS: `git revert HEAD` immediately — you broke something
+        5. If guard PASSES and metric_mode == "metric": run verify command, record metric
+           - Metric improved? KEEP (commit stays, advance)
+           - Metric same/worse? DISCARD (`git revert HEAD`), try different approach
+        6. If guard PASSES and metric_mode == "pass_fail": KEEP (commit stays)
+
+        Max iterations: {MAX_BUILDER_ITERATIONS}
+        Report each iteration outcome in task metadata as it happens:
+          metadata.iterations: [{metric: N, guard: "pass"|"fail", status: "keep"|"discard"|"revert", description: "..."}]
+
+        When all requirements are implemented (or max iterations reached),
+        mark this task complete with final metadata:
+          metadata: { final_metric: N, iterations_used: M, keeps: K, discards: D }
+
         {If cycle 2+: "Incorporate findings for your partition: {partition_findings}"}
       owner: {partition.builder_name}
 
     build_task_ids.append(task.id)
 
   ## Wait for ALL builders to complete their build tasks.
-  ## Monitor via task status. If any builder sends NEEDS_HUMAN, handle immediately.
   Wait for all tasks in build_task_ids to reach "completed" status.
-  Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: All {partition_count} builder(s) done. Starting verify..."
 
-  inner_attempt = 1
-  verified = false
+  ## Read iteration results from each builder's task metadata
+  for partition in partitions:
+    if partition.status == "needs_human":
+      continue
+    task_meta = read_task_metadata(partition.build_task_id)
+    iterations = task_meta.get("iterations", [])
 
-  while inner_attempt <= MAX_INNER_RETRIES and not verified:
+    ## Track discard streaks for stuck detection
+    consecutive_discards = 0
+    for it in iterations:
+      if it.status == "discard" or it.status == "revert":
+        consecutive_discards += 1
+      else:
+        consecutive_discards = 0
 
-    ## 2. VERIFY
-    Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Verify attempt {inner_attempt}/{MAX_INNER_RETRIES}..."
+    discard_streak_per_builder[partition.builder_name] = consecutive_discards
+
+    ## Log to TSV
+    for it in iterations:
+      append_tsv_row(outer_cycle, partition.builder_name, it.iteration, it.metric, it.guard, it.status, it.description)
+
+    ## Smart stuck detection (autoresearch-style escalation)
+    if consecutive_discards >= 5:
+      Tell user: "Builder {partition.builder_name} hit 5 consecutive discards."
+
+      ## Instead of immediately aborting, give one radical rethink attempt
+      if not partition.rethink_attempted:
+        partition.rethink_attempted = true
+        Tell user: "Attempting radical rethink for {partition.builder_name}..."
+
+        TaskCreate:
+          subject: "Radical rethink: {partition.name} (cycle {outer_cycle})"
+          description: |
+            You have hit 5 consecutive discards. Before giving up:
+            1. Re-read the FULL spec from scratch
+            2. Re-read the implementation contract
+            3. Review your git log to see what you tried
+            4. Try a FUNDAMENTALLY different approach:
+               - If you were adding, try modifying existing code instead
+               - If you were modifying, try a different file/module
+               - Combine elements from your 2-3 best (closest to working) attempts
+               - Try the OPPOSITE of your last approach
+            5. Make ONE atomic change and verify
+            Max 3 iterations for this rethink.
+            Report outcome in task metadata.
+          owner: {partition.builder_name}
+
+        Wait for rethink task to complete.
+        rethink_meta = read_task_metadata(rethink_task_id)
+
+        if rethink_meta.get("status") == "success":
+          Tell user: "Radical rethink succeeded for {partition.builder_name}."
+          ## Continue to verify phase
+        else:
+          partition.status = "needs_human"
+          Tell user: "Radical rethink failed. Marking {partition.name} as NEEDS_HUMAN."
+          if not all_partitions_independent(partitions):
+            ABORT("Builder {partition.builder_name} stagnant on dependent partition after rethink.")
+      else:
+        partition.status = "needs_human"
+        Tell user: "Marking {partition.name} as NEEDS_HUMAN (rethink already attempted)."
+        if not all_partitions_independent(partitions):
+          ABORT("Builder {partition.builder_name} stagnant on dependent partition.")
+
+  Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Build complete. Starting integration..."
+
+  ## 2. INTEGRATE — Reviewer merges builder branches into integration
+  Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Merging builder branches into integration..."
+
+  TaskCreate:
+    subject: "Integrate builder branches (cycle {outer_cycle})"
+    description: |
+      Merge each builder's branch into the integration branch, one at a time.
+      Integration worktree: {INTEGRATION_WORKTREE}
+
+      For each builder (in order of partition index):
+        1. cd {INTEGRATION_WORKTREE}
+        2. git merge tim-loop/{feature-slug}/builder-{index} --no-edit
+        3. If merge conflict:
+           - Report which files conflict
+           - Report which builder's changes caused the conflict
+           - Set metadata: { merge_conflict: true, conflicting_builder: "builder-{N}", files: [...] }
+           - Mark task as completed (orchestrator handles routing)
+        4. After each successful merge, run guard checks:
+           - {GUARD_COMMANDS or "typecheck + lint + existing tests + build"}
+           - If guard fails after a merge, record which builder's merge broke it
+
+      After ALL merges succeed and guards pass:
+        - If metric_mode == "metric": run verify command, record integrated metric
+        - Report in metadata: {
+            merge_conflicts: false,
+            guard_status: "pass"|"fail",
+            failed_after_builder: null|"builder-N",
+            integrated_metric: N
+          }
+    owner: reviewer
+
+  Wait for reviewer to complete integration task.
+  Read integration metadata.
+
+  if integration_metadata.merge_conflicts:
+    ## Route conflict back to the conflicting builder
+    conflicting_builder = integration_metadata.conflicting_builder
+    Tell user: "Merge conflict from {conflicting_builder}. Routing resolution..."
 
     TaskCreate:
-      subject: "Verify build (cycle {outer_cycle}, attempt {inner_attempt})"
+      subject: "Resolve merge conflict (cycle {outer_cycle})"
       description: |
-        Verify the builders' work. Attempt {inner_attempt} of {MAX_INNER_RETRIES}.
-        Baseline failures (ignore these): {baseline}
-        {If inner_attempt > 1: "Previous failure keys: {previous_failure_keys}.
-         Run previously-failed checks FIRST, then full suite if those pass."}
-        Report verdict, failure_keys, and prognosis in task metadata:
-          metadata: { verdict: "PASS"|"FAIL", failure_keys: [...], prognosis: "FIXABLE"|"NEEDS_HUMAN"|"UNCLEAR" }
-        On FAIL: send detailed findings to ALL builders via SendMessage
-        (each builder needs to see findings relevant to their partition).
-      owner: verifier
+        Your branch caused a merge conflict when integrating into the main branch.
+        Conflicting files: {integration_metadata.files}
+        Resolve the conflict in YOUR worktree by rebasing on the integration branch:
+          git fetch origin
+          git rebase tim-loop/{feature-slug}/integration
+        Then re-verify with guard checks.
+      owner: {conflicting_builder}
 
-    Wait for verifier to complete the verify task.
-    Read task metadata for: verdict, failure_keys, prognosis.
-    previous_failure_keys = failure_keys
+    Wait for resolution. Then retry integration from the conflicting builder onward.
 
-    if verdict == "PASS":
-      verified = true
-      Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Verify PASS."
+  if integration_metadata.guard_status == "fail":
+    ## Route guard failure to the builder whose merge broke it
+    failed_builder = integration_metadata.failed_after_builder
+    Tell user: "Guard failed after merging {failed_builder}. Routing fix..."
+    ## Send fix task to that builder, re-attempt integration after fix
 
-    elif verdict == "FAIL":
+  ## 3. VERIFY INTEGRATION
+  Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Verifying integrated build..."
 
-      if prognosis == "NEEDS_HUMAN":
-        ABORT("Verifier reports issue needing human intervention.")
+  TaskCreate:
+    subject: "Verify integrated build (cycle {outer_cycle})"
+    description: |
+      Verify the fully integrated build in the integration worktree.
+      Integration worktree: {INTEGRATION_WORKTREE}
+      Baseline failures (ignore these): {baseline}
+      Baseline metric: {baseline_metric}
 
-      ## 2b. FIX — Route failures to owning builders
-      Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Verify FAIL ({inner_attempt}/{MAX_INNER_RETRIES}, {prognosis}). Routing fixes..."
+      Run full verification:
+      1. GUARD CHECK: Run all guard commands. ALL must pass.
+         {GUARD_COMMANDS or "typecheck + lint + existing tests + build"}
+      2. FEATURE VERIFICATION: Run Tier 1-3 checks for new functionality.
+      3. If metric_mode == "metric": Run verify command, extract metric value.
+      4. PLAN ADHERENCE: Check implementation against spec requirements.
 
-      ## Route failure_keys to builders by file path
-      builder_failures = {}  // map: builder_name -> [failure_keys]
-      unroutable_failures = []
+      Report in task metadata: {
+        verdict: "PASS"|"FAIL",
+        guard_status: "pass"|"fail",
+        feature_metric: N,
+        metric_delta: +/-N (compared to baseline),
+        failure_keys: [...],
+        prognosis: "FIXABLE"|"NEEDS_HUMAN"|"UNCLEAR"
+      }
+      On FAIL: send detailed findings to relevant builders via SendMessage.
+    owner: verifier
 
-      for key in failure_keys:
-        ## Extract file path from failure key (format: tier{N}/{check}/{identifier})
-        ## The identifier typically contains a file path, e.g. "TS2345:src/payment.ts:42"
-        file_path = extract_file_path(key)
-        owning_builder = find_partition_owner(file_path, partitions)
+  Wait for verifier to complete the verify task.
+  Read task metadata for: verdict, failure_keys, prognosis, feature_metric.
 
-        if owning_builder:
-          builder_failures[owning_builder].append(key)
-        else:
-          unroutable_failures.append(key)
+  ## Log integration verification to TSV
+  append_tsv_row(outer_cycle, "integration", 0, feature_metric, guard_status, verdict, "integrated verify")
 
-      ## Handle unroutable failures: assign to builder-1 (or the single builder)
-      if unroutable_failures:
-        builder_failures[partitions[0].builder_name].extend(unroutable_failures)
+  if verdict == "PASS":
+    Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Integration verify PASS."
+    ## Proceed to publish
 
-      ## Per-builder stagnation detection
-      for builder_name, keys in builder_failures.items():
-        if builder_name not in failure_history_per_builder:
-          failure_history_per_builder[builder_name] = []
-        failure_history_per_builder[builder_name].append(set(keys))
+  elif verdict == "FAIL":
+    if prognosis == "NEEDS_HUMAN":
+      ABORT("Verifier reports issue needing human intervention.")
 
-        history = failure_history_per_builder[builder_name]
-        if len(history) >= 3:
-          last_three = history[-3:]
-          if last_three[0] == last_three[1] == last_three[2]:
-            ## This builder is stagnant
-            Tell user: "Builder {builder_name} stagnant — same failures 3x."
-            partition = find_partition_by_builder(builder_name, partitions)
-            if all_partitions_independent(partitions):
-              partition.status = "needs_human"
-              Send shutdown_request to {builder_name}
-              Tell user: "Marking partition {partition.name} as NEEDS_HUMAN. Other builders continue."
-              del builder_failures[builder_name]  // remove from fix routing
-            else:
-              ABORT("Builder {builder_name} stagnant on dependent partition.")
+    ## Route failures to owning builders for fix
+    Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Integration verify FAIL ({prognosis}). Routing fixes..."
 
-      ## Create fix tasks only for builders with failures
-      fix_task_ids = []
-      for builder_name, keys in builder_failures.items():
-        task = TaskCreate:
-          subject: "Fix failures in {builder_name}'s partition (cycle {outer_cycle}, attempt {inner_attempt})"
-          description: |
-            Fix the issues reported by verifier in attempt {inner_attempt}.
-            Your failure keys: {keys}
-            The verifier sent you detailed findings via message.
-            Only fix files within your partition scope.
-            Mark complete when fixes are committed.
-          owner: {builder_name}
+    builder_failures = route_failures_to_builders(failure_keys, partitions)
 
-        fix_task_ids.append(task.id)
+    ## Each builder fixes in their own worktree, then we re-integrate
+    fix_task_ids = []
+    for builder_name, keys in builder_failures.items():
+      task = TaskCreate:
+        subject: "Fix integration failures for {builder_name} (cycle {outer_cycle})"
+        description: |
+          The integrated build failed. These failures are in your partition:
+          {keys}
+          Fix in your worktree using keep/discard discipline.
+          The verifier sent you detailed findings via message.
+          When fixed, mark this task complete.
+        owner: {builder_name}
+      fix_task_ids.append(task.id)
 
-      Tell user: "Routing {len(failure_keys)} failures to {len(builder_failures)} builder(s)..."
+    Wait for all fix tasks to complete.
+    ## Re-attempt integration from Step 2 (max 2 re-integration attempts per cycle)
+    ## If still failing after 2 re-integrations, proceed to review with known issues
 
-      Wait for all tasks in fix_task_ids to reach "completed" status.
-      inner_attempt += 1
-
-  if not verified:
-    ABORT("Inner loop exhausted after {MAX_INNER_RETRIES} attempts.")
-
-  ## 3. PUBLISH
+  ## 4. PUBLISH
   Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Publishing..."
-
-  publisher = next(p.builder_name for p in partitions if p.status != "needs_human")
 
   TaskCreate:
     subject: "Publish PR (cycle {outer_cycle})"
     description: |
-      All builders have committed locally to the worktree branch.
-      {If pr_number == null: "Push branch and create a new PR against {base_branch}.
+      The integration branch is verified. Push and create/update PR.
+      Integration worktree: {INTEGRATION_WORKTREE}
+      {If pr_number == null: "Push the integration branch and create a new PR against {base_branch}.
        Include spec requirements as a checklist in the PR description.
        Mark P0/P1/P2 items with their priority. Check off completed items.
-       Include requirements from ALL partitions, grouped by partition name."}
+       Include requirements from ALL partitions, grouped by partition name.
+       Include a metrics summary if metric_mode == 'metric':
+         Baseline: {baseline_metric} → Final: {feature_metric} ({metric_delta})"}
       {If pr_number != null: "Push updates to PR #{pr_number}.
        Update the PR description checklist with newly completed items."}
       Report the PR number and URL in task metadata:
         metadata: { pr_number: 47, pr_url: "https://..." }
-    owner: {publisher}
+    owner: reviewer
 
-  Wait for publisher to complete publish task.
+  Wait for reviewer to complete publish task.
   Read pr_number from task metadata.
 
-  ## 4. REVIEW
+  ## 5. REVIEW
   Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Reviewing PR #{pr_number}..."
 
   TaskCreate:
@@ -393,7 +530,12 @@ while outer_cycle <= MAX_OUTER_CYCLES:
 
   if verdict == "PASS":
     Tell user: "Review PASS. PR #{pr_number} ready for human review."
+    ## Log final state to TSV
+    append_tsv_row(outer_cycle, "review", 0, feature_metric, "pass", "PASS", "review approved")
+    Tell user final metrics summary if metric_mode == "metric":
+      "Metric: {baseline_metric} → {feature_metric} ({metric_delta})"
     Invoke superpowers:finishing-a-development-branch
+    CLEANUP_BUILDER_WORKTREES()
     SHUTDOWN_TEAM()
     DONE.
 
@@ -418,7 +560,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
         verifier_discovery
       )
 
-      failure_history_per_builder = {}
+      discard_streak_per_builder = {}
 
     outer_cycle += 1
 
@@ -435,10 +577,11 @@ When aborting for any reason:
    - Which cycle/attempt failed
    - What the prognosis was
    - What the unresolved issues are (from last verifier/reviewer task metadata)
+   - Metrics summary if metric_mode == "metric"
 
 2. **Preserve work and state:**
-   - The worktree branch is NOT deleted
-   - Write a resume state file to the worktree root:
+   - The worktree branches are NOT deleted
+   - Write a resume state file to the integration worktree root:
      ```json
      // .tim-loop-resume.json
      {
@@ -446,9 +589,16 @@ When aborting for any reason:
        "spec_path": "/path/to/spec.md",
        "contract_path": ".tim-loop-contract.md",
        "base_branch": "main",
+       "integration_worktree": "/path/to/integration",
+       "builder_worktrees": {
+         "builder-1": "/path/to/builder-1",
+         "builder-2": "/path/to/builder-2"
+       },
        "pr_number": 47,
        "outer_cycle": 2,
-       "inner_attempt": 3,
+       "metric_mode": "metric",
+       "baseline_metric": 72.3,
+       "latest_metric": 85.1,
        "verifier_discovery": {
          "test_runner": "vitest",
          "test_command": "npm test",
@@ -461,56 +611,64 @@ When aborting for any reason:
          {
            "name": "auth-module",
            "builder_name": "builder-1",
+           "builder_worktree": "/path/to/builder-1",
            "files": ["src/auth/*", "tests/auth/*"],
            "requirements": ["[P0] JWT validation", "[P0] Session management"],
            "status": "completed",
-           "last_failure_keys": [],
-           "last_prognosis": null
+           "last_metric": 85.1,
+           "rethink_attempted": false
          },
          {
            "name": "payment-module",
            "builder_name": "builder-2",
+           "builder_worktree": "/path/to/builder-2",
            "files": ["src/payments/*", "tests/payments/*"],
            "requirements": ["[P0] Payment processing", "[P1] Refund handling"],
            "status": "fixing",
-           "last_failure_keys": ["tier1/test/payment.test.ts:42"],
-           "last_prognosis": "FIXABLE"
+           "last_metric": 45.0,
+           "rethink_attempted": true
          }
        ],
-       "abort_reason": "Inner loop exhausted for partition payment-module."
+       "abort_reason": "Builder builder-2 stagnant after rethink."
      }
      ```
-   - Tell user the branch name and resume file location
-   - Tell user: "Run `/tim-loop --resume <worktree-path>` to continue."
+   - Tell user the branch names and resume file location
+   - Tell user: "Run `/tim-loop --resume <integration-worktree-path>` to continue."
 
 3. **Shut down team:**
    - Send `shutdown_request` to all agents
    - Wait for confirmations
    - TeamDelete
+   - Do NOT delete worktrees (user may want to inspect)
 
 ## RESUME Procedure (when invoked with `--resume` or a `.tim-loop-resume.json` path)
 
 1. Read the resume state file
 2. Read the spec from `spec_path`
-3. Read the contract from `contract_path` (already on disk in the worktree)
+3. Read the contract from `contract_path` (already on disk in the integration worktree)
 4. Extract `verifier_discovery` from the resume state (if present)
-5. Create a new team (old agents are gone — no session resumption for teammates)
-6. Spawn fresh verifier with `verifier_discovery` from resume state (so it skips re-discovery)
-7. Spawn fresh reviewer agents
-8. Spawn builders ONLY for partitions with status not in ("completed", "needs_human"):
-   - For each incomplete partition, spawn a builder with that partition's scope
+5. Verify all worktrees still exist (integration + builder worktrees)
+6. Create a new team (old agents are gone — no session resumption for teammates)
+7. Spawn fresh verifier with `verifier_discovery` from resume state (so it skips re-discovery)
+8. Spawn fresh reviewer agent
+9. Spawn builders ONLY for partitions with status not in ("completed", "needs_human"):
+   - For each incomplete partition, spawn a builder with that partition's scope and worktree path
    - Completed partitions do not need a builder
    - Do NOT re-spawn the architect — the contract is already on disk
-9. Read the existing task list to see what was completed before the abort
-10. Skip to the phase where the abort occurred:
-   - If aborted during BUILD: create build tasks for incomplete partitions
-   - If aborted during VERIFY: create a new verify task at the next attempt
-   - If aborted during FIX: create fix tasks for the failing partitions
-   - If aborted during REVIEW: start the next outer cycle
-   - If all cycles exhausted: inform user, suggest manual intervention
-   - If a partition was marked "needs_human": inform user which partition
-     needs manual intervention and continue with remaining partitions
-11. Continue the loop from there
+10. Read the existing task list to see what was completed before the abort
+11. Skip to the phase where the abort occurred
+12. Continue the loop from there
+
+## CLEANUP_BUILDER_WORKTREES Procedure
+
+Called on successful completion to clean up builder worktrees (integration worktree
+is kept since it has the PR branch):
+
+```bash
+for each builder worktree:
+  git worktree remove <builder-worktree-path> --force
+  git branch -d tim-loop/{feature-slug}/builder-{index}
+```
 
 ## SHUTDOWN_TEAM Procedure
 
@@ -523,6 +681,7 @@ When aborting for any reason:
 
 Called between outer cycles to give all agents fresh context windows.
 The team and task list persist — only agents are swapped.
+Builder worktrees persist — fresh builders pick up where the old ones left off.
 
 ```
 REFRESH_AGENTS(cycle_number, reviewer_findings_by_builder, pr_number, baseline, partitions, contract_content, verifier_discovery):
@@ -551,40 +710,64 @@ REFRESH_AGENTS(cycle_number, reviewer_findings_by_builder, pr_number, baseline, 
   For each partition where status not in ("completed", "needs_human"):
     Use the builder spawn template with:
       - {CYCLE_NUMBER} = cycle_number
+      - {MAX_OUTER_CYCLES} = MAX_OUTER_CYCLES
+      - {MAX_BUILDER_ITERATIONS} = MAX_BUILDER_ITERATIONS
       - {PREVIOUS_FINDINGS_OR_EMPTY} = reviewer_findings_by_builder[partition.builder_name]
       - {CONTRACT_CONTENT} = contract_content
+      - {BUILDER_WORKTREE} = partition.builder_worktree (same worktree, fresh agent)
 
   ## 6. Wait for all fresh agents to report ready
 ```
 
+## TSV Progress Log
+
+The orchestrator maintains `tim-loop-results.tsv` in the integration worktree.
+This provides visibility into the loop's progress and enables pattern recognition.
+
+Format:
+```
+cycle	builder	iteration	metric	guard	status	description
+0	-	0	72.3	pass	baseline	initial state
+1	builder-1	1	75.0	pass	keep	implemented auth endpoints
+1	builder-1	2	75.0	fail	revert	broke existing tests
+1	builder-1	3	78.2	pass	keep	auth endpoints with fixed imports
+1	builder-2	1	72.3	pass	keep	added UI components
+1	builder-2	2	72.3	pass	discard	metric unchanged after refactor
+1	integration	0	80.5	pass	PASS	integrated verify
+```
+
+The `metric` column contains the feature metric value (from `## Verify Command`) when
+metric_mode == "metric", or a pass/fail count when metric_mode == "pass_fail".
+
 ## Orchestrator Iron Laws
 
 1. **Delegate everything.** Never read files, run commands, or analyze output. Agents do all work.
-2. **Tasks are the state machine.** Create tasks with dependencies, read task metadata for decisions. Counters tracked: cycle, attempt, failure_keys (per builder), prognosis, pr_number, partitions, verifier_discovery.
-3. **Never skip phases.** ARCHITECT -> BUILD -> VERIFY -> PUBLISH -> REVIEW. Always.
-4. **Abort on NEEDS_HUMAN.** Immediately. No retries.
-5. **Abort on stagnation.** 3 consecutive identical failure_key sets per builder in inner loop = builder stagnant. Isolate if independent, abort if dependent.
-6. **Preserve resume state on abort.** Always write `.tim-loop-resume.json` with per-partition state before shutting down.
+2. **Tasks are the state machine.** Create tasks with dependencies, read task metadata for decisions.
+3. **Never skip phases.** ARCHITECT -> BUILD (keep/discard) -> INTEGRATE -> VERIFY -> PUBLISH -> REVIEW. Always.
+4. **Abort on NEEDS_HUMAN.** Immediately. No retries (except radical rethink for stagnant builders).
+5. **Escalate before aborting.** On builder stagnation: try radical rethink once before marking NEEDS_HUMAN.
+6. **Preserve resume state on abort.** Always write `.tim-loop-resume.json` with per-partition state and worktree paths.
 7. **Route by file ownership.** Fix tasks and review findings go to the builder that owns the relevant files. Unroutable items go to builder-1.
-8. **Respect backward compatibility.** Single partition = single builder named "builder" with no scope restrictions.
+8. **Respect backward compatibility.** Single partition = single builder named "builder" with a single builder worktree, no scope restrictions.
+9. **Guard before feature.** Guard check failures (regressions) always trigger immediate revert. Feature metric changes trigger keep/discard.
+10. **Log everything to TSV.** Every builder iteration, every integration attempt, every verification result.
 
 ## Progress Reporting
 
 One line per phase transition:
-- "Architect approved. Spawning 3 builders..."
-- "Cycle 1/3: Build complete (3/3 builders done). Starting verify..."
-- "Cycle 1/3: Verify FAIL (attempt 2/5, FIXABLE). Routing fixes to 2 builder(s)..."
-- "Cycle 1/3: Builder-2 stagnant. Marking partition as NEEDS_HUMAN."
-- "Cycle 1/3: Verify PASS. Publishing PR..."
+- "Architect approved. Creating 3 builder worktrees..."
+- "Cycle 1/3: Build complete (builder-1: 5 keeps/2 discards, builder-2: 3 keeps/0 discards)..."
+- "Cycle 1/3: Integrating builder branches..."
+- "Cycle 1/3: Integration verify PASS. Metric: 72.3 → 85.1 (+12.8). Publishing..."
+- "Cycle 1/3: Builder-2 hit 5 discards. Attempting radical rethink..."
 - "Cycle 1/3: Review FAIL (1 blocking). Refreshing agents for cycle 2..."
-- "Cycle 1/3: Agents refreshed (3 builders, verifier, reviewer). Starting cycle 2..."
-- "Cycle 2/3: Build complete. Starting verify..."
+- "Cycle 2/3: Build complete. Integrating..."
 
 ## Skill Dependencies
 
 | Skill | Used By | Purpose |
 |-------|---------|---------|
-| superpowers:using-git-worktrees | orchestrator | Create isolated worktree |
+| superpowers:using-git-worktrees | orchestrator | Create isolated worktrees |
 | superpowers:test-driven-development | builders | Strict TDD during build |
 | superpowers:verification-before-completion | builders | Self-check before handoff |
 | superpowers:requesting-code-review | reviewer | Review methodology foundation |

@@ -2,28 +2,51 @@
 
 Reference document for the verifier agent. Defines what to check and how.
 
+## Two-Phase Verification Model
+
+All verification follows a two-phase model:
+
+```
+Phase 1: GUARD CHECK (baseline invariants — must ALWAYS pass)
+  ├── Spec Guards (from ## Guards section)
+  ├── Or Standard Guards: typecheck + lint + existing tests + build
+  └── If ANY guard fails → FAIL immediately, skip Phase 2
+
+Phase 2: FEATURE VERIFICATION (new functionality — tracked with metric)
+  ├── Tier 1: typecheck + lint + NEW tests + build (always run)
+  ├── Tier 2: platform-detected checks (only if Tier 1 passes)
+  ├── Tier 3: spec override checks (only if Tier 1 passes)
+  ├── Plan adherence check
+  └── Metric extraction (if metric_mode == "metric")
+```
+
+**Guard failures are non-negotiable.** They indicate a regression in existing
+functionality. No amount of feature improvement can compensate for a guard failure.
+
 ## Baseline Mode
 
-When running baseline verification (before builder makes changes):
-- Run all Tier 1 checks on the clean worktree
-- Record every failure as a `baseline_failure` key
+When running baseline verification (before builders make changes):
+- Run all guard commands on the clean worktree — record failures as baseline
+- Run Tier 1 checks — record any pre-existing failures
+- If metric_mode == "metric": run Verify Command to capture baseline metric value
 - Do NOT run Tier 2/3 (no changes to verify yet)
-- Store results in task metadata: `{ baseline_failures: [...] }`
+- Store results in task metadata: `{ baseline_failures: [...], baseline_metric: N }`
 
-## Incremental Mode (attempt 2+)
+## Phase 1: Guard Check
 
-When previous failure_keys are provided:
-1. Parse failure_keys to identify which checks failed
-2. Run ONLY those checks first
-3. If they now pass → run the full suite
-4. If they still fail → stop and report immediately
+Guards protect existing functionality. They are run from the spec's `## Guards` section.
+If no Guards section exists, fall back to standard guards.
 
-This avoids re-running the entire suite when the builder only fixed specific issues.
+**Spec Guards:** Each line in `## Guards` is a command that must exit 0.
+```bash
+# Example spec guards:
+npx tsc --noEmit                                    # typecheck
+npm run lint                                         # lint
+npm test -- --testPathIgnorePatterns="new-tests"     # existing tests only
+npm run build                                        # build
+```
 
-## Tier 1 — Always Run (universal)
-
-Run these checks. Typecheck and lint can run in parallel since they're independent.
-Tests and build run sequentially after.
+**Standard Guards (fallback):** When no `## Guards` in spec:
 
 ```
 ┌──────────────┐  ┌──────────────┐
@@ -33,13 +56,28 @@ Tests and build run sequentially after.
        └────────┬────────┘
                 │
          ┌──────▼───────┐
-         │  Unit Tests   │   ← sequential (only if typecheck + lint pass)
+         │ Existing Tests│   ← sequential (only if typecheck + lint pass)
          └──────┬───────┘
                 │
          ┌──────▼───────┐
          │    Build      │   ← sequential (only if tests pass)
          └──────────────┘
 ```
+
+**Guard failure keys use the `guard/` prefix:**
+- `guard/typecheck/TS2345:src/payment.ts:42`
+- `guard/lint/no-unused-vars:src/old.ts:10`
+- `guard/test/existing-auth.test.ts:42`
+- `guard/build/esbuild-error:src/index.ts`
+
+**If any guard fails:** verdict = FAIL immediately. Do NOT run Phase 2.
+The prognosis is usually FIXABLE (the builder broke something and needs to revert/fix).
+
+## Phase 2: Feature Verification
+
+Runs only after Phase 1 (guards) passes. Verifies NEW functionality.
+
+### Tier 1 — Always Run (universal)
 
 | Check | How to detect command | Example |
 |-------|----------------------|---------|
@@ -52,7 +90,11 @@ Tests and build run sequentially after.
 
 **Monorepo handling:** If a monorepo root has workspace-level scripts (e.g., `pnpm test` runs all), use those. If a specific package was changed, also run `pnpm --filter <pkg> test` for targeted feedback.
 
-## Tier 2 — Platform Detection (agent-detected)
+**Note:** Tier 1 checks overlap with guards intentionally — guards run the EXISTING test
+suite, Tier 1 runs the FULL suite (including new tests). If guards pass but Tier 1
+finds new test failures, that's a feature issue, not a regression.
+
+### Tier 2 — Platform Detection (agent-detected)
 
 Check for these signals and run the corresponding verification. Only run checks relevant to files that changed.
 
@@ -80,16 +122,27 @@ Check for these signals and run the corresponding verification. Only run checks 
 7. `playwright-cli screenshot --filename=verify-{feature}.png` for evidence
 8. `playwright-cli close`
 
-## Tier 3 — Spec Override
+### Tier 3 — Spec Override
 
 If the spec file contains a `## Verification` section, parse it for:
 - **Additional checks:** Lines starting with "Run `command`" → execute command, check exit code
 - **Skip directives:** Lines starting with "Skip" → skip the named check
 - **URL checks:** Lines with "Check ... returns" → curl/fetch the URL and verify response
 
-Spec overrides take precedence over Tier 2 detection. They do NOT override Tier 1 (always-run).
+Spec overrides take precedence over Tier 2 detection. They do NOT override guards or Tier 1.
 
-## Plan Adherence Check
+### Metric Extraction
+
+If metric_mode == "metric" and the spec has a `## Verify Command`:
+
+1. Run the verify command
+2. Parse the output for a single number
+3. Compare to baseline_metric using the spec's Direction:
+   - "higher is better": metric_delta = current - baseline (positive = improvement)
+   - "lower is better": metric_delta = baseline - current (positive = improvement)
+4. Include in metadata: `feature_metric`, `metric_delta`
+
+### Plan Adherence Check
 
 After all automated checks pass, review the implementation against the spec:
 
@@ -103,13 +156,11 @@ After all automated checks pass, review the implementation against the spec:
 
 - **P0 missing** → FAIL with failure_key `plan/requirement-missing:{requirement-slug}`
 - **P1 missing** → Flag but don't FAIL (report as non-blocking)
-- **P2 missing** → Note as observation (acceptable if cycles are running low)
+- **P2 missing** → Note as observation (acceptable if iterations ran low)
 
-## Failure Key Format
+## Feature Failure Key Format
 
-Every failure must be tagged with a structured key for stagnation detection.
-
-Format: `tier{N}/{check}/{identifier}`
+Feature failures use the `tier{N}/` prefix:
 
 | Tier | Check | Key Example |
 |------|-------|------------|
@@ -122,9 +173,6 @@ Format: `tier{N}/{check}/{identifier}`
 | 3 | spec-check | `tier3/spec-check/api-returns-wrong-status` |
 | plan | requirement | `plan/requirement-missing:rate-limiting` |
 | plan | scope-creep | `plan/scope-creep:analytics-tracking` |
-
-The orchestrator compares failure_key sets across verify attempts. Three identical
-sets in a row = stagnation = abort. Be precise and consistent.
 
 ## Baseline Comparison
 
@@ -147,9 +195,12 @@ Mark verify tasks complete with structured metadata:
 ```json
 {
   "verdict": "PASS",
+  "guard_status": "pass",
+  "feature_metric": 85.1,
+  "metric_delta": 12.8,
   "failure_keys": [],
   "prognosis": null,
-  "checks_run": "typecheck, lint, 47 tests, build, e2e, plan adherence",
+  "checks_run": "guards (4/4 pass), typecheck, lint, 47 tests, build, e2e, plan adherence",
   "baseline_excluded": 2
 }
 ```
@@ -159,10 +210,13 @@ or
 ```json
 {
   "verdict": "FAIL",
-  "failure_keys": ["tier1/test/payment.test.ts:42", "plan/requirement-missing:rate-limiting"],
+  "guard_status": "fail",
+  "feature_metric": null,
+  "metric_delta": null,
+  "failure_keys": ["guard/typecheck/TS2345:src/payment.ts:42"],
   "prognosis": "FIXABLE",
-  "checks_run": "typecheck, lint, 45 tests (2 failed)",
-  "baseline_excluded": 2
+  "checks_run": "guards (1/4 fail — stopped at guard phase)",
+  "baseline_excluded": 0
 }
 ```
 
