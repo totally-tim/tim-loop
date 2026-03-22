@@ -246,7 +246,7 @@ claude --dangerously-skip-permissions
 /tim-spec add rate limiting to the API
 ```
 
-Walks you through brainstorming (or imports gstack planning artifacts), explores the codebase for architecture context, then outputs a structured spec to `docs/specs/` with prioritized requirements, metric/guard configuration, test strategy, and risk assessment.
+Walks you through brainstorming (or imports gstack planning artifacts), co-creates user journeys with you, explores the codebase for architecture context, then outputs a structured spec to `docs/specs/` with prioritized requirements, user journeys, metric/guard configuration, test strategy, and risk assessment.
 
 ### 2. Run the loop
 
@@ -260,10 +260,12 @@ Progress updates show in your terminal and the task list (`Ctrl+T`):
 Architect approved. Creating 3 builder worktrees...
 Cycle 1/3: Build complete (builder-1: 5 keeps/2 discards, builder-2: 3 keeps/0 discards)...
 Cycle 1/3: Integrating builder branches...
-Cycle 1/3: Integration verify PASS. Metric: 72.3 → 85.1 (+12.8). Publishing...
+Cycle 1/3: Guards PASS. Feature verify PASS. Running integration completeness...
+Cycle 1/3: Integration completeness: 1 stub, 0 dead exports, 2/3 journeys. Routing fixes...
 Cycle 1/3: Review FAIL (1 blocking). Refreshing agents for cycle 2...
 Cycle 2/3: Build complete. Integrating...
-Cycle 2/3: Integration verify PASS. Metric: 85.1 → 91.4 (+6.3). Publishing...
+Cycle 2/3: Guards PASS. Feature verify PASS. Integration completeness: 0 stubs, 0 dead, 3/3 journeys PASS.
+Cycle 2/3: Integration verify PASS. Metric: 72.3 → 91.4 (+19.1). Publishing...
 Cycle 2/3: Review PASS. PR #47 ready for human review.
 ```
 
@@ -297,7 +299,7 @@ Prevent API abuse by enforcing per-user request limits.
 - Retry-After header value matches remaining cooldown seconds
 ```
 
-Optional but recommended: `## Metric`, `## Guards`, `## Verify Command` (enable metric-driven iteration).
+Optional but recommended: `## Metric`, `## Guards`, `## Verify Command` (enable metric-driven iteration), `## User Journeys` (enable browser-based integration smoke tests).
 
 Other optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessment`, `## Open Questions`, `## Loop Config`, `## Verification`, `## Out of Scope`.
 
@@ -351,9 +353,13 @@ Defaults are overridable per-spec via the `## Loop Config` section:
 
 **Guard before feature** — Guard checks (baseline invariants) are non-negotiable. A change that improves the feature metric but breaks existing tests is always reverted. Regressions are never tolerated.
 
-**Iron Laws + Progressive Disclosure** — Each agent gets 5-8 critical rules in its spawn prompt (reliably followed) plus a reference file with detailed guidance (read on first turn). Fewer strong rules beat many weak ones.
+**Deterministic skeleton, flexible flesh** — The orchestrator's phase sequence (BUILD → INTEGRATE → VERIFY → PUBLISH → REVIEW) and all branching decisions (merge conflict? guard fail? NEEDS_HUMAN?) are explicit pseudocode — the model follows the state machine exactly. Implementation details within each phase (how to iterate results, count discards, format TSV rows) are described as intent, trusting the model to execute. Inspired by [Anthropic's lessons from building Claude Code](https://www.anthropic.com/engineering/claude-code-agent-lessons): keep flow control deterministic, simplify everything else.
+
+**Iron Laws + Progressive Disclosure** — Each agent gets 5-8 critical rules in its spawn prompt (reliably followed) plus a reference file with detailed guidance (read on first turn). Fewer strong rules beat many weak ones. Both tim-loop and tim-spec use `effort: max` to ensure maximum thinking time for complex orchestration.
 
 **Task-driven state machine** — The shared task list IS the coordination layer. The orchestrator doesn't parse messages for verdicts — structured metadata on completed tasks provides clean, reliable signals for loop decisions.
+
+**Top-down verification** — Phase 3 (integration completeness) verifies the feature works as a product, not just as code. Stub scans, dead export detection, connection verification, and user journey smoke tests catch the "green tests, broken app" problem that bottom-up verification misses.
 
 **Route by file ownership** — Failures and review findings are routed to the builder that owns the relevant files. Two builders never fix the same file. Unroutable items default to builder-1.
 
