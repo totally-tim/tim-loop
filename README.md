@@ -2,26 +2,31 @@
 
 An automated build-verify-review development loop for [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 
-Takes a feature spec, partitions the work across parallel builders in an isolated worktree, verifies independently, publishes a PR, and reviews it — repeating until the reviewer passes or max cycles are exhausted.
+Takes a feature spec, partitions the work across parallel builders — each in their own isolated git worktree — verifies with metric-driven keep/discard iteration, merges into an integration branch, and reviews the PR. Repeats until the reviewer passes or max cycles are exhausted.
 
 ```
-/tim-spec add webhook retry logic  -->  brainstorm + structured spec
+/tim-spec add webhook retry logic  -->  brainstorm (or import gstack plan) + structured spec
 /tim-loop docs/specs/2026-02-28-webhook-retries.md  -->  automated loop --> PR ready
 ```
 
 ## How It Works
 
 ```
-SETUP: Spec --> Worktree --> Architect partitions work --> N builders spawned --> Baseline verification
+SETUP: Spec --> Integration worktree --> Architect partitions work
+       --> Per-builder worktrees created --> Baseline verification (guards + metric)
 
 THE LOOP (up to 3 cycles):
 
-  1. BUILD        N builders work in parallel, each implementing their partition with TDD
-  2. VERIFY       Independent verifier runs checks against baseline
-  2b. FIX         If verify fails, failures routed to owning builder by file path
-                  Per-builder stagnation detection: 3 identical failures = isolate or abort
-  3. PUBLISH      Commit, push, create/update PR with priority checklist
-  4. REVIEW       Reviewer checks PR diff against spec by priority
+  1. BUILD        N builders work in parallel, each in their own worktree.
+                  Each change: commit --> guard check --> metric check --> keep or discard.
+                  Atomic iteration inspired by autoresearch.
+  2. INTEGRATE    Reviewer merges builder branches into integration, one at a time.
+                  Guard check after each merge. Identifies which merge broke what.
+  3. VERIFY       Verifier runs full verification on integrated build.
+                  Phase 1: Guard check (baseline invariants, non-negotiable).
+                  Phase 2: Feature verification (metric tracking, plan adherence).
+  4. PUBLISH      Push integration branch, create/update PR with priority checklist.
+  5. REVIEW       Reviewer checks PR diff against spec by priority.
 
   PASS --> Done. PR ready for human review.
   FAIL --> All agents shut down, fresh agents spawned for next cycle.
@@ -32,39 +37,97 @@ THE LOOP (up to 3 cycles):
 
 | Agent | Job | Access |
 |-------|-----|--------|
-| Architect | Explore codebase, write shared contracts, partition work into N scopes | Writes shared contracts. Shuts down after planning. |
-| Builder(s) | Implement partition with TDD, fix failures, commit code | Read/write scoped to partition files. |
-| Verifier | Run checks, validate plan adherence, report failure_keys | Read-only. Cannot edit files. |
-| Reviewer | Review PR diff against spec with priority tracking | GitHub CLI only. Can request screenshots. |
+| Architect | Explore codebase, write shared contracts to integration branch, partition work into N scopes | Writes shared contracts. Shuts down after planning. |
+| Builder(s) | Implement partition with keep/discard iteration in isolated worktree | Read/write scoped to partition files in own worktree. |
+| Verifier | Run guard checks + feature verification, validate plan adherence, extract metrics | Read-only. Cannot edit files. Operates across worktrees. |
+| Reviewer | Merge builder branches into integration, review PR diff against spec | Git merge + GitHub CLI. Can request screenshots. |
 
 The orchestrator is a **thin coordinator** — it creates tasks, reads task metadata, and makes decisions. It never reads code or runs tests. Progress is visible in real time via `Ctrl+T` (task list).
 
-## v3 — Builder Swarm
+## Per-Builder Worktree Isolation
 
-The architect analyzes the codebase and spec, then produces an **implementation contract**:
-- Writes shared types/interfaces to disk (compilable, importable by all builders)
-- Partitions the feature into N independent pieces with **non-overlapping file ownership**
-- Maps every spec requirement to exactly one partition
+Each builder gets its own git worktree, branched from the integration branch:
 
-Each builder gets a focused context window scoped to its own files. Two builders never edit the same file, eliminating merge conflicts. When verification fails, failures route back to the owning builder by file path.
+```
+main (untouched)
+│
+├── worktree: tim-loop/{feature}/integration   ← architect writes contract here
+│                                                 reviewer merges here
+│
+├── worktree: tim-loop/{feature}/builder-1     ← builder-1 works here (isolated)
+├── worktree: tim-loop/{feature}/builder-2     ← builder-2 works here (isolated)
+└── worktree: tim-loop/{feature}/builder-3     ← builder-3 works here (isolated)
+```
 
-**Backward compatible** — when the architect produces a single partition, the loop falls back to single-builder behavior with no scope restrictions.
+**Why this matters:**
+- Builder A's broken typecheck doesn't block Builder B
+- Failures are unambiguous — it's their worktree, their problem
+- Each builder can compile and test independently
+- Integration bugs are caught explicitly when the reviewer merges branches
 
-### Builder count
+**Backward compatible** — when the architect produces a single partition, the loop creates one builder worktree with no scope restrictions.
 
-| Setting | Behavior |
-|---------|----------|
-| `builder_count: auto` (default) | Architect decides based on codebase analysis (typically 2-5) |
-| `builder_count: N` | Force exactly N builders |
-| `max_builders: 5` (default) | Safety cap on the architect's recommendation |
+## Keep/Discard Iteration (autoresearch-style)
 
-### Per-builder stagnation
+Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch) and [uditgoenka/autoresearch](https://github.com/uditgoenka/autoresearch), each builder follows an atomic iteration loop:
 
-Stagnation detection runs per-builder. If a builder hits 3 identical failure sets and its partition is independent from others, that partition is marked `NEEDS_HUMAN` while the remaining builders continue. If the partition has dependencies, the loop aborts.
+```
+1. Make ONE atomic change (if you need "and" to describe it, split it)
+2. Commit (before verifying — enables clean rollback)
+3. Guard check: did I break existing functionality?
+   ├── FAIL → git revert HEAD (immediate, no exceptions)
+   └── PASS → continue
+4. Metric check: did the feature metric improve?
+   ├── IMPROVED → KEEP (commit stays)
+   ├── SAME/WORSE → DISCARD (git revert HEAD, try different approach)
+   └── (pass/fail mode: guard pass = keep)
+5. Log iteration result → repeat
+```
 
-### Resume with partial teams
+**Guard vs feature verification:**
 
-On resume, only incomplete partitions get builders. Completed partitions are skipped. The architect is never re-spawned — the contract is already on disk.
+| | Guard Check | Feature Verification |
+|---|---|---|
+| Purpose | Protect existing functionality | Track new functionality progress |
+| On failure | Immediate revert (non-negotiable) | Report as failure, try different approach |
+| Metric | Not tracked | Tracked (higher/lower is better) |
+
+**Smart stuck escalation:** After 5 consecutive discards, instead of aborting immediately, the builder gets one "radical rethink" attempt — re-read everything, try the opposite approach, combine near-misses. Only aborts if the rethink also fails.
+
+## gstack Integration (tim-spec)
+
+Tim-spec can import planning artifacts from [gstack](https://github.com/garrytan/gstack) as a starting point for spec generation:
+
+```
+/tim-spec add rate limiting
+```
+
+If gstack planning output exists in `~/.gstack/projects/{slug}/`:
+- Design docs (`*-design-*.md`) → Goal, Requirements, Risk Assessment
+- Test plans (`*-test-plan-*.md`) → Test Strategy, Acceptance Criteria
+
+The user reviews the extracted sections, assigns priorities, and adjusts before the spec is finalized. Brainstorming mode remains the default when no gstack artifacts exist.
+
+### Metric-driven specs
+
+Tim-spec now generates three optional sections that enable metric-driven iteration:
+
+```markdown
+## Metric
+Command: `npm test -- --coverage | grep "All files" | awk '{print $4}'`
+Direction: higher is better
+Baseline: 72.3
+
+## Guards
+- `npx tsc --noEmit`
+- `npm test -- --testPathIgnorePatterns="new-tests"`
+- `npm run lint`
+
+## Verify Command
+npm test -- --coverage | grep "All files" | awk '{print $4}'
+```
+
+When present, tim-loop uses metric-driven keep/discard. Without them, it falls back to pass/fail mode.
 
 ## Install
 
@@ -90,7 +153,7 @@ Start a new Claude Code session — `/tim-spec` and `/tim-loop` will appear in a
 
 Tim Loop spawns up to 6+ agents that make many tool calls (file edits, test runs, git commands, `gh` CLI). In the default permission mode, **each tool call requires manual approval** — this creates significant friction during the automated loop.
 
-**Easiest approach:** Run Claude Code with `--dangerously-skip-permissions` (or your alias for it). Teammates inherit the lead's permission mode, so all agents will run fully autonomously. Since Tim Loop already works in an isolated git worktree, the blast radius is contained to a throwaway branch.
+**Easiest approach:** Run Claude Code with `--dangerously-skip-permissions` (or your alias for it). Teammates inherit the lead's permission mode, so all agents will run fully autonomously. Since Tim Loop works in isolated git worktrees, the blast radius is contained to throwaway branches.
 
 ```bash
 claude --dangerously-skip-permissions
@@ -134,7 +197,7 @@ claude --dangerously-skip-permissions
 /tim-spec add rate limiting to the API
 ```
 
-Walks you through brainstorming, explores the codebase for architecture context, then outputs a structured spec to `docs/specs/` with prioritized requirements, test strategy, and risk assessment.
+Walks you through brainstorming (or imports gstack planning artifacts), explores the codebase for architecture context, then outputs a structured spec to `docs/specs/` with prioritized requirements, metric/guard configuration, test strategy, and risk assessment.
 
 ### 2. Run the loop
 
@@ -145,26 +208,25 @@ Walks you through brainstorming, explores the codebase for architecture context,
 Progress updates show in your terminal and the task list (`Ctrl+T`):
 
 ```
-Architect approved. Spawning 3 builders...
-Cycle 1/3: Build complete (3/3 builders done). Starting verify...
-Cycle 1/3: Verify FAIL (attempt 2/5, FIXABLE). Routing fixes to 2 builder(s)...
-Cycle 1/3: Verify PASS. Publishing PR...
+Architect approved. Creating 3 builder worktrees...
+Cycle 1/3: Build complete (builder-1: 5 keeps/2 discards, builder-2: 3 keeps/0 discards)...
+Cycle 1/3: Integrating builder branches...
+Cycle 1/3: Integration verify PASS. Metric: 72.3 → 85.1 (+12.8). Publishing...
 Cycle 1/3: Review FAIL (1 blocking). Refreshing agents for cycle 2...
-Cycle 1/3: Agents refreshed (3 builders, verifier, reviewer). Starting cycle 2...
-Cycle 2/3: Build complete (3/3 builders done). Starting verify...
-Cycle 2/3: Verify PASS. Publishing PR...
+Cycle 2/3: Build complete. Integrating...
+Cycle 2/3: Integration verify PASS. Metric: 85.1 → 91.4 (+6.3). Publishing...
 Cycle 2/3: Review PASS. PR #47 ready for human review.
 ```
 
 ### 3. Resume after abort
 
-If the loop aborts, per-partition state is saved to `.tim-loop-resume.json` in the worktree:
+If the loop aborts, per-partition state is saved to `.tim-loop-resume.json` in the integration worktree:
 
 ```
-/tim-loop --resume /path/to/worktree/.tim-loop-resume.json
+/tim-loop --resume /path/to/integration-worktree/.tim-loop-resume.json
 ```
 
-Only incomplete partitions get new builders. Completed work is preserved.
+Only incomplete partitions get new builders. Builder worktrees are preserved. Completed work is kept.
 
 ### 4. Write specs manually
 
@@ -186,25 +248,30 @@ Prevent API abuse by enforcing per-user request limits.
 - Retry-After header value matches remaining cooldown seconds
 ```
 
-Optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessment`, `## Open Questions`, `## Loop Config`, `## Verification`, `## Out of Scope`.
+Optional but recommended: `## Metric`, `## Guards`, `## Verify Command` (enable metric-driven iteration).
+
+Other optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessment`, `## Open Questions`, `## Loop Config`, `## Verification`, `## Out of Scope`.
 
 ## Key Features
 
+- **Per-builder worktree isolation** — each builder works in their own git worktree. No cascading build errors. Unambiguous failure attribution.
+- **Keep/discard iteration** — autoresearch-style atomic commits with guard check + metric check. Keep improvements, discard regressions.
+- **Guard vs feature verification** — guards protect existing functionality (non-negotiable revert). Feature verification tracks progressive improvement.
+- **Smart stuck escalation** — 5 consecutive discards triggers a radical rethink attempt before aborting. Re-read everything, try opposite approach, combine near-misses.
+- **Reviewer as integrator** — reviewer merges builder branches one at a time with guard checks after each merge. Identifies which merge broke what.
+- **gstack import** — tim-spec can consume gstack design docs and test plans as starting points. Brainstorming remains the default.
+- **Metric-driven specs** — optional `## Metric`, `## Guards`, `## Verify Command` sections enable progressive improvement tracking. Falls back to pass/fail without them.
+- **TSV progress log** — every builder iteration, integration result, and review outcome logged to `tim-loop-results.tsv` for observability.
 - **Architect-driven partitioning** — dedicated agent explores the codebase, writes shared contracts to disk, and splits work into N non-overlapping file scopes.
 - **Parallel builders** — N builders work simultaneously, each with a focused context window scoped to their partition.
-- **File-scoped failure routing** — verification failures route to the owning builder by file path. Builders only fix issues in their scope.
-- **Per-builder stagnation** — stagnation detection per-builder. Stagnant partitions can be isolated while others continue.
-- **Shared contracts** — architect writes compilable types/interfaces that builders import. Eliminates integration mismatches.
 - **Task-driven coordination** — agents use TaskCreate/TaskUpdate. Progress visible via `Ctrl+T`.
-- **Baseline verification** — pre-existing failures recorded before building. No false negatives.
+- **Baseline verification** — pre-existing failures and metric values recorded before building. No false negatives.
 - **Priority requirements** — `[P0]`/`[P1]`/`[P2]` tags determine build order and review strictness.
-- **Incremental verification** — retries run previously-failed checks first before the full suite.
 - **3-tier verification** — (1) Always: typecheck, lint, tests, build. (2) Platform-detected: Playwright, xctest, e2e. (3) Spec overrides.
-- **Configurable loop** — spec overrides for cycles, retries, builder count, baseline, and more.
-- **Abort and resume** — per-partition state saved to `.tim-loop-resume.json`. Resume spawns builders only for incomplete partitions.
-- **Visual review** — reviewer can request screenshots from verifier for UI changes.
-- **Agent refresh between cycles** — all agents are shut down and re-spawned with fresh context windows between outer cycles. Prevents context bloat from accumulated fix attempts. Verifier discovery (test runners, commands) is carried forward so fresh verifiers skip re-discovery.
-- **Backward compatible** — single partition = single builder with no scope restrictions.
+- **Configurable loop** — spec overrides for cycles, iterations, builder count, metric mode, and more.
+- **Abort and resume** — per-partition state saved to `.tim-loop-resume.json`. Resume spawns builders only for incomplete partitions. All worktrees preserved.
+- **Agent refresh between cycles** — all agents shut down and re-spawn with fresh context windows between outer cycles. Verifier discovery carried forward.
+- **Backward compatible** — single partition = single builder worktree with no scope restrictions.
 
 ## Configuration
 
@@ -213,19 +280,26 @@ Defaults are overridable per-spec via the `## Loop Config` section:
 | Setting | Default | Spec Override |
 |---------|---------|---------------|
 | Outer cycles | 3 | `max_outer_cycles: N` |
-| Inner retries | 5 | `max_inner_retries: N` |
+| Builder iterations | 8 | `max_builder_iterations: N` |
 | Plan approval (cycle 1) | true | `require_plan_approval: false` |
 | Baseline verification | true | `skip_baseline: true` |
 | Builder count | auto | `builder_count: N` or `auto` |
 | Max builders | 5 | `max_builders: N` |
+| Metric mode | auto | `metric_mode: metric` or `pass_fail` |
 
 ## Design Principles
 
-**Thin orchestrator / fat agents** — The orchestrator creates tasks and reads task metadata (verdicts, failure_keys, prognoses). All code reading, test running, and diff analysis happens in agents. This keeps the main context window clean enough to survive the full loop.
+**Thin orchestrator / fat agents** — The orchestrator creates tasks and reads task metadata (verdicts, failure_keys, metrics, prognoses). All code reading, test running, and diff analysis happens in agents. This keeps the main context window clean enough to survive the full loop.
 
-**Architect before builders** — The architect produces a partition plan and shared contracts before any builder is spawned. This prevents builders from stepping on each other's files and ensures integration contracts are explicit and importable.
+**Architect before builders** — The architect produces a partition plan and shared contracts in the integration worktree before any builder worktree is created. Builder worktrees branch from integration, inheriting the contract automatically.
 
-**Iron Laws + Progressive Disclosure** — Each agent gets 5-6 critical rules in its spawn prompt (reliably followed) plus a reference file with detailed guidance (read on first turn). Fewer strong rules beat many weak ones.
+**Worktree isolation** — Each builder gets a complete, independent copy of the repo. No shared filesystem state during build. Integration happens explicitly through git merge, with guard checks at each step.
+
+**Keep/discard discipline** — Inspired by autoresearch: one atomic change, commit before verifying, mechanical metric extraction, keep or discard based on direction. Git history preserves every attempt for pattern analysis.
+
+**Guard before feature** — Guard checks (baseline invariants) are non-negotiable. A change that improves the feature metric but breaks existing tests is always reverted. Regressions are never tolerated.
+
+**Iron Laws + Progressive Disclosure** — Each agent gets 5-8 critical rules in its spawn prompt (reliably followed) plus a reference file with detailed guidance (read on first turn). Fewer strong rules beat many weak ones.
 
 **Task-driven state machine** — The shared task list IS the coordination layer. The orchestrator doesn't parse messages for verdicts — structured metadata on completed tasks provides clean, reliable signals for loop decisions.
 
@@ -241,10 +315,10 @@ skills/
 │   ├── tim-builder.md     # Builder agent prompt + reference
 │   ├── tim-verifier.md    # Verifier agent prompt + reference
 │   ├── tim-reviewer.md    # Reviewer agent prompt + reference
-│   ├── tim-verify.md      # 3-tier verification strategy
+│   ├── tim-verify.md      # Two-phase verification strategy (guard + feature)
 │   └── README.md          # Detailed docs
 ├── tim-spec/
-│   └── SKILL.md           # Spec generation skill
+│   └── SKILL.md           # Spec generation skill (brainstorming + gstack import)
 commands/
 ├── tim-loop.md            # /tim-loop slash command
 └── tim-spec.md            # /tim-spec slash command
