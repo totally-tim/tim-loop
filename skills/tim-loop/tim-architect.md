@@ -15,6 +15,16 @@ Agent tool (general-purpose):
     produce an implementation contract, write shared types/interfaces to
     disk, and define work partitions for parallel builders.
 
+    Each builder gets their own git worktree — design partitions with this
+    isolation in mind. Builders cannot see each other's changes until
+    the reviewer merges them into the integration branch.
+
+    ## Your Worktree
+
+    Integration worktree: {INTEGRATION_WORKTREE}
+    All your work happens here. Shared contracts you write will be inherited
+    by builder worktrees (they branch from this integration branch).
+
     ## The Spec
 
     {SPEC_CONTENT}
@@ -26,6 +36,13 @@ Agent tool (general-purpose):
     ## Test Strategy
 
     {TEST_STRATEGY}
+
+    ## Metric Configuration
+
+    Mode: {METRIC_MODE}  (metric | pass_fail)
+    Guard Commands: {GUARD_COMMANDS}
+    Verify Command: {METRIC_COMMAND}
+    (If present, builders use keep/discard iteration with this metric.)
 
     ## Config
 
@@ -40,14 +57,17 @@ Agent tool (general-purpose):
     4. Partition file sets MUST be non-overlapping — no file appears in two partitions
     5. Write compilable, importable shared contracts to disk — not just documentation
     6. Use Context7 (resolve-library-id + query-docs) before referencing ANY library API
+    7. Design for worktree isolation — builders cannot see each other's uncommitted work
+    8. Map ALL cross-partition connections — the verifier uses this to check integration
 
     ## First Turn
 
-    1. Read ~/.claude/skills/tim-loop/tim-architect.md for detailed process guidance
-    2. Study the codebase: architecture, file structure, existing patterns, test setup
-    3. Produce the implementation contract
-    4. Write shared contracts to disk
-    5. Submit via ExitPlanMode for orchestrator approval
+    1. cd {INTEGRATION_WORKTREE}
+    2. Read ~/.claude/skills/tim-loop/tim-architect.md for detailed process guidance
+    3. Study the codebase: architecture, file structure, existing patterns, test setup
+    4. Produce the implementation contract
+    5. Write shared contracts to disk (commit them to the integration branch)
+    6. Submit via ExitPlanMode for orchestrator approval
 ```
 
 ---
@@ -56,11 +76,13 @@ Agent tool (general-purpose):
 
 ### Process
 
-1. **Codebase Exploration**
+1. **Codebase Exploration** (in integration worktree)
    - Read CLAUDE.md, project config files, and key source directories
    - Identify existing patterns: naming conventions, error handling, test structure
    - Map the module/directory structure relevant to the spec's requirements
    - Identify shared types, utilities, and abstractions already in use
+   - If spec has `## Guards`: verify guard commands work on the clean codebase
+   - If spec has `## Metric`: run verify command to confirm it produces output
 
 2. **Partition Analysis**
    - Group spec requirements by which files/modules they touch
@@ -73,15 +95,33 @@ Agent tool (general-purpose):
    - If only 1 partition is possible (all requirements touch the same files),
      that's fine — the orchestrator will spawn a single builder
 
-3. **Shared Contract Creation**
+   **Worktree isolation considerations:**
+   - Each builder works in their own worktree, branched from the integration branch
+   - Builders CANNOT see each other's changes during the build phase
+   - Shared contracts you write here are inherited by all builder worktrees
+   - Design partitions so each builder can compile/test independently
+   - Minimize cross-partition type dependencies — put shared types in contracts
+
+3. **Shared Contract Creation** (committed to integration branch)
    - Identify types, interfaces, and constants shared across partitions
    - Write them to appropriate locations following existing project conventions
    - These files become READ-ONLY for builders — only the architect creates them
    - Shared contracts must be syntactically valid and importable
    - Commit shared contracts: `git add <files> && git commit -m "feat: add shared contracts for {feature}"`
+   - This commit will be in every builder's worktree (they branch from integration)
 
-4. **Contract Document**
-   - Write the implementation contract to `.tim-loop-contract.md` in the worktree root
+4. **Connection Mapping** (critical for integration verification)
+   - Identify every seam where one partition's output is another's input
+   - Map API endpoints to their frontend callers
+   - Map components to the pages that render them
+   - Map routes to navigation elements that link to them
+   - Map events to their handlers across partitions
+   - Include connections to EXISTING code (e.g., new component rendered on existing page)
+   - The verifier uses this map in Phase 3c to confirm everything is wired up
+
+5. **Contract Document**
+   - Write the implementation contract to `.tim-loop-contract.md` in the integration worktree root
+   - Must include `## Connections` section (even if empty for single-partition features)
    - Submit via ExitPlanMode for orchestrator approval
 
 ### Implementation Contract Format
@@ -110,6 +150,25 @@ they must message the orchestrator with SCOPE_CONFLICT.
 - Test pattern: {describe test file naming, assertion style, mock approach}
 - Import style: {describe relative vs absolute imports, barrel files, etc.}
 
+## Connections
+
+Map every cross-partition seam. The verifier uses this checklist during
+integration completeness verification (Phase 3c) to confirm all pieces are wired up.
+
+| Source (built by) | Target (built by) | Connection Type | What to verify |
+|---|---|---|---|
+| `POST /api/invoices` (partition-1) | `InvoiceForm.tsx` submit handler (partition-2) | API call | Frontend calls this endpoint with correct URL and payload |
+| `InvoiceForm` component (partition-2) | `/invoices/new` page (partition-2) | Rendering | Component is imported and rendered on the page |
+| `/invoices/new` route (partition-2) | Sidebar nav (existing) | Navigation | Route is linked in sidebar under "Invoices" |
+| `InvoiceCreatedEvent` (partition-1) | `EmailService.sendConfirmation` (partition-3) | Event handler | Event listener is registered for this event type |
+
+Also list connections to EXISTING code (not just between new partitions):
+| `InvoiceList` component (partition-2) | Dashboard page (existing) | Rendering | Component added to existing dashboard layout |
+
+If a feature has no cross-partition connections (single partition, or all partitions
+are fully independent), this section can be empty but must still be present:
+"No cross-partition connections. All partitions are self-contained."
+
 ## Partitions
 
 ### Partition 1: {descriptive-name}
@@ -125,6 +184,11 @@ they must message the orchestrator with SCOPE_CONFLICT.
 **Dependencies:**
 - Reads shared contracts from `path/to/types.ts`
 - {Any other partition this one depends on, if applicable}
+
+**Isolation Notes:**
+- Can this partition compile/test independently? {yes/no + explanation}
+- External services needed: {none / list}
+- Shared state: {none / list of shared files read (not modified)}
 
 **Implementation Notes:**
 Brief guidance on approach, relevant existing code to reference, edge cases.

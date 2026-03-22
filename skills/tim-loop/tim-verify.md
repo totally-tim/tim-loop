@@ -2,28 +2,62 @@
 
 Reference document for the verifier agent. Defines what to check and how.
 
+## Three-Phase Verification Model
+
+All verification follows a three-phase model:
+
+```
+Phase 1: GUARD CHECK (baseline invariants — must ALWAYS pass)
+  ├── Spec Guards (from ## Guards section)
+  ├── Or Standard Guards: typecheck + lint + existing tests + build
+  └── If ANY guard fails → FAIL immediately, skip Phase 2+3
+
+Phase 2: FEATURE VERIFICATION (new functionality — tracked with metric)
+  ├── Tier 1: typecheck + lint + NEW tests + build (always run)
+  ├── Tier 2: platform-detected checks (only if Tier 1 passes)
+  ├── Tier 3: spec override checks (only if Tier 1 passes)
+  ├── Plan adherence check
+  └── Metric extraction (if metric_mode == "metric")
+  └── If Phase 2 FAILs → skip Phase 3
+
+Phase 3: INTEGRATION COMPLETENESS (top-down — does it work as a product?)
+  ├── 3a. Stub/placeholder scan
+  ├── 3b. Dead export / unreachable code detection
+  ├── 3c. Connection verification (API↔UI, routes↔nav, components↔pages)
+  └── 3d. User journey smoke tests (browser-based, from spec's ## User Journeys)
+```
+
+**Guard failures are non-negotiable.** They indicate a regression in existing
+functionality. No amount of feature improvement can compensate for a guard failure.
+
+**Phase 3 catches the "green tests, broken app" problem.** Code can pass every unit
+test, typecheck, and lint check while being completely unreachable by users. Phase 3
+verifies the feature works top-down, from the user's perspective.
+
 ## Baseline Mode
 
-When running baseline verification (before builder makes changes):
-- Run all Tier 1 checks on the clean worktree
-- Record every failure as a `baseline_failure` key
+When running baseline verification (before builders make changes):
+- Run all guard commands on the clean worktree — record failures as baseline
+- Run Tier 1 checks — record any pre-existing failures
+- If metric_mode == "metric": run Verify Command to capture baseline metric value
 - Do NOT run Tier 2/3 (no changes to verify yet)
-- Store results in task metadata: `{ baseline_failures: [...] }`
+- Store results in task metadata: `{ baseline_failures: [...], baseline_metric: N }`
 
-## Incremental Mode (attempt 2+)
+## Phase 1: Guard Check
 
-When previous failure_keys are provided:
-1. Parse failure_keys to identify which checks failed
-2. Run ONLY those checks first
-3. If they now pass → run the full suite
-4. If they still fail → stop and report immediately
+Guards protect existing functionality. They are run from the spec's `## Guards` section.
+If no Guards section exists, fall back to standard guards.
 
-This avoids re-running the entire suite when the builder only fixed specific issues.
+**Spec Guards:** Each line in `## Guards` is a command that must exit 0.
+```bash
+# Example spec guards:
+npx tsc --noEmit                                    # typecheck
+npm run lint                                         # lint
+npm test -- --testPathIgnorePatterns="new-tests"     # existing tests only
+npm run build                                        # build
+```
 
-## Tier 1 — Always Run (universal)
-
-Run these checks. Typecheck and lint can run in parallel since they're independent.
-Tests and build run sequentially after.
+**Standard Guards (fallback):** When no `## Guards` in spec:
 
 ```
 ┌──────────────┐  ┌──────────────┐
@@ -33,13 +67,28 @@ Tests and build run sequentially after.
        └────────┬────────┘
                 │
          ┌──────▼───────┐
-         │  Unit Tests   │   ← sequential (only if typecheck + lint pass)
+         │ Existing Tests│   ← sequential (only if typecheck + lint pass)
          └──────┬───────┘
                 │
          ┌──────▼───────┐
          │    Build      │   ← sequential (only if tests pass)
          └──────────────┘
 ```
+
+**Guard failure keys use the `guard/` prefix:**
+- `guard/typecheck/TS2345:src/payment.ts:42`
+- `guard/lint/no-unused-vars:src/old.ts:10`
+- `guard/test/existing-auth.test.ts:42`
+- `guard/build/esbuild-error:src/index.ts`
+
+**If any guard fails:** verdict = FAIL immediately. Do NOT run Phase 2.
+The prognosis is usually FIXABLE (the builder broke something and needs to revert/fix).
+
+## Phase 2: Feature Verification
+
+Runs only after Phase 1 (guards) passes. Verifies NEW functionality.
+
+### Tier 1 — Always Run (universal)
 
 | Check | How to detect command | Example |
 |-------|----------------------|---------|
@@ -52,9 +101,15 @@ Tests and build run sequentially after.
 
 **Monorepo handling:** If a monorepo root has workspace-level scripts (e.g., `pnpm test` runs all), use those. If a specific package was changed, also run `pnpm --filter <pkg> test` for targeted feedback.
 
-## Tier 2 — Platform Detection (agent-detected)
+**Note:** Tier 1 checks overlap with guards intentionally — guards run the EXISTING test
+suite, Tier 1 runs the FULL suite (including new tests). If guards pass but Tier 1
+finds new test failures, that's a feature issue, not a regression.
+
+### Tier 2 — Platform Detection (agent-detected)
 
 Check for these signals and run the corresponding verification. Only run checks relevant to files that changed.
+
+#### Automated E2E suites (run existing test suites)
 
 | Signal | Verification Action | Notes |
 |--------|-------------------|-------|
@@ -63,14 +118,40 @@ Check for these signals and run the corresponding verification. Only run checks 
 | `.xcodeproj` or `Package.swift` present | `xcodebuild test -scheme <scheme> -destination 'platform=iOS Simulator,name=iPhone 16'` | Detect scheme from project |
 | `vitest.config.e2e.ts` or `jest.config.e2e.ts` | Run E2E suite: `pnpm test:e2e` or equivalent | May need test infra (Docker, DB) |
 | `docker-compose*.test.yml` present | `docker compose -f <file> up -d` before E2E, `down` after | Spin up test infra first |
-| `apps/web/` or `src/pages/` changed | Playwright smoke on `http://localhost:3000` | Start dev server, run smoke tests |
 | `*.swift` files changed | `swift test` or `xcodebuild test` | Run in package/project dir |
 | Contract test files (`*.contract.test.*`) | Run contract test suite | Often separate config |
 | `*.spec.ts` with `@playwright/test` import | `pnpm exec playwright test <file>` | Run specific spec files |
 | Smoke test config (`vitest.config.smoke.*`) | Run smoke suite | May need running server |
-| `playwright-cli` available | Use `playwright-cli` for interactive browser verification | Snapshot-based validation |
 
-**When using playwright-cli for interactive browser verification:**
+#### Interactive browser verification (visual/manual checks)
+
+When web UI changes are detected (e.g., `apps/web/`, `src/pages/`, `src/components/`
+changed), run interactive browser verification for visual correctness.
+
+**Tool selection priority** (use the first available):
+
+1. **`/browse` (gstack)** — Preferred when gstack is installed. Fast headless browser
+   with screenshot, interaction, diffing, and element assertion. Use the `/browse` skill.
+2. **`playwright-cli`** — Fallback when gstack is not available. Superpowers headless
+   browser with snapshot-based validation.
+3. **`mcp__claude-in-chrome__*`** — Only if explicitly configured in the project's
+   CLAUDE.md. Not used by default.
+
+**Detection:** Check if gstack skills are available by looking for `~/.claude/skills/gstack/`.
+If present, use `/browse`. Otherwise, check for `playwright-cli` skill at
+`~/.claude/skills/playwright-cli/`. If neither is available, skip interactive browser
+verification and note it in the verify report.
+
+**When using `/browse` (gstack) for interactive browser verification:**
+1. Start the dev server if not running
+2. Navigate to affected pages
+3. Take screenshots of each affected page/component
+4. Verify expected elements are present and visually correct
+5. Test interactive flows (click, fill, navigate) for correct behavior
+6. Diff before/after states when applicable
+7. Save screenshot evidence with descriptive filenames
+
+**When using `playwright-cli` for interactive browser verification:**
 1. Start the dev server if not running
 2. `playwright-cli open http://localhost:<port>`
 3. Navigate to pages affected by the change
@@ -80,16 +161,31 @@ Check for these signals and run the corresponding verification. Only run checks 
 7. `playwright-cli screenshot --filename=verify-{feature}.png` for evidence
 8. `playwright-cli close`
 
-## Tier 3 — Spec Override
+**Project CLAUDE.md overrides:** If the project's CLAUDE.md specifies a preferred browser
+tool (e.g., "use /browse for all web browsing"), respect that directive regardless of
+the priority order above.
+
+### Tier 3 — Spec Override
 
 If the spec file contains a `## Verification` section, parse it for:
 - **Additional checks:** Lines starting with "Run `command`" → execute command, check exit code
 - **Skip directives:** Lines starting with "Skip" → skip the named check
 - **URL checks:** Lines with "Check ... returns" → curl/fetch the URL and verify response
 
-Spec overrides take precedence over Tier 2 detection. They do NOT override Tier 1 (always-run).
+Spec overrides take precedence over Tier 2 detection. They do NOT override guards or Tier 1.
 
-## Plan Adherence Check
+### Metric Extraction
+
+If metric_mode == "metric" and the spec has a `## Verify Command`:
+
+1. Run the verify command
+2. Parse the output for a single number
+3. Compare to baseline_metric using the spec's Direction:
+   - "higher is better": metric_delta = current - baseline (positive = improvement)
+   - "lower is better": metric_delta = baseline - current (positive = improvement)
+4. Include in metadata: `feature_metric`, `metric_delta`
+
+### Plan Adherence Check
 
 After all automated checks pass, review the implementation against the spec:
 
@@ -103,28 +199,163 @@ After all automated checks pass, review the implementation against the spec:
 
 - **P0 missing** → FAIL with failure_key `plan/requirement-missing:{requirement-slug}`
 - **P1 missing** → Flag but don't FAIL (report as non-blocking)
-- **P2 missing** → Note as observation (acceptable if cycles are running low)
+- **P2 missing** → Note as observation (acceptable if iterations ran low)
 
-## Failure Key Format
+## Phase 3: Integration Completeness
 
-Every failure must be tagged with a structured key for stagnation detection.
+Runs only after Phase 1 (guards) AND Phase 2 (feature verification) pass.
+Phase 3 verifies the feature works as a product, not just as isolated code.
 
-Format: `tier{N}/{check}/{identifier}`
+### 3a. Stub/Placeholder Scan
 
-| Tier | Check | Key Example |
-|------|-------|------------|
-| 1 | typecheck | `tier1/typecheck/TS2345:src/payment.ts:42` |
-| 1 | lint | `tier1/lint/no-unused-vars:src/old.ts:10` |
-| 1 | test | `tier1/test/payment.test.ts:42` |
-| 1 | build | `tier1/build/esbuild-error:src/index.ts` |
-| 2 | playwright | `tier2/playwright/login-page-404` |
-| 2 | cypress | `tier2/cypress/checkout-flow-timeout` |
-| 3 | spec-check | `tier3/spec-check/api-returns-wrong-status` |
-| plan | requirement | `plan/requirement-missing:rate-limiting` |
-| plan | scope-creep | `plan/scope-creep:analytics-tracking` |
+Scan the diff (new and modified files only) for incomplete implementations:
 
-The orchestrator compares failure_key sets across verify attempts. Three identical
-sets in a row = stagnation = abort. Be precise and consistent.
+**Search patterns:**
+- `TODO`, `FIXME`, `HACK`, `PLACEHOLDER`, `XXX` (case-insensitive)
+- `NotImplementedError`, `throw new Error("not implemented")`
+- `console.log("stub")`, `console.log("TODO")`
+- Empty function/method bodies: functions that only contain `pass`, `return`, `return null`,
+  `return undefined`, `return {}`, `return []`, or `throw`
+- Hardcoded mock data: `"test"`, `"placeholder"`, `"TODO"`, `"example.com"` in non-test files
+- Commented-out code blocks (lines starting with `//` or `#` that contain function calls or logic)
+
+**Failure key format:** `integration/stub/{file}:{line}:{pattern}`
+
+Examples:
+- `integration/stub/src/api/invoices.ts:42:TODO`
+- `integration/stub/src/components/InvoiceForm.tsx:15:empty-function`
+- `integration/stub/src/services/payment.ts:28:hardcoded-mock`
+
+**Severity:** Each stub is a BLOCKING failure. Stubs indicate incomplete work that will
+break the feature at runtime even if all tests pass.
+
+### 3b. Dead Export / Unreachable Code Detection
+
+Check that new code is actually used — not just created:
+
+**For each new file in the diff:**
+1. Find all exports (named exports, default exports, module.exports)
+2. Search the rest of the codebase for imports of those exports
+3. If an export is never imported anywhere → dead export
+
+**For web applications specifically:**
+- New components: are they rendered in any page/layout? (`grep` for `<ComponentName` or `import ComponentName`)
+- New pages/routes: are they registered in the router config?
+- New API routes: are they registered in the server/router setup?
+- New functions/hooks: are they called from any other module?
+
+**Failure key format:** `integration/dead-export/{file}:{export-name}`
+
+Examples:
+- `integration/dead-export/src/components/InvoiceForm.tsx:InvoiceForm`
+- `integration/dead-export/src/api/routes/invoices.ts:createInvoice`
+- `integration/dead-export/src/hooks/useInvoice.ts:useInvoice`
+
+**Severity:** Each dead export is a BLOCKING failure. An unreachable component or
+function is a clear sign of incomplete integration.
+
+### 3c. Connection Verification
+
+Verify the seams between partitions are wired up. Use the architect's
+`## Connections` map from the implementation contract as a checklist.
+
+**For each connection in the contract:**
+
+| Connection Type | What to verify | How |
+|---|---|---|
+| API endpoint → Frontend call | Frontend code contains a fetch/axios/trpc call to the endpoint URL | `grep` for the endpoint path in frontend files |
+| Component → Page rendering | Component is imported and rendered in a page/layout file | `grep` for `<ComponentName` in page files |
+| Route → Router config | Route path is registered in the router (Next.js `app/`, React Router, etc.) | Check router config for the path |
+| Route → Navigation link | Route is linked from existing navigation (sidebar, menu, header) | `grep` for route path in nav components |
+| Event handler → Event emitter | Handler is registered where events are dispatched | Check event registration code |
+| Database migration → Model | New DB columns/tables have corresponding model definitions | Check ORM model files |
+| Environment variable → Usage | New env vars referenced in code are documented in `.env.example` | Check `.env.example` or equivalent |
+
+**Failure key format:** `integration/connection/{source}→{target}:{description}`
+
+Examples:
+- `integration/connection/POST /api/invoices→InvoiceForm:frontend-never-calls-endpoint`
+- `integration/connection/InvoiceForm→/invoices/new:component-not-rendered-on-page`
+- `integration/connection//invoices→sidebar:route-not-linked-in-navigation`
+
+**Severity:** Each missing connection is a BLOCKING failure.
+
+### 3d. User Journey Smoke Tests
+
+If the spec has a `## User Journeys` section, execute each journey in a real browser.
+This is the definitive integration test — it verifies the feature works from a user's
+perspective, through actual navigation.
+
+**Process:**
+
+1. **Start the dev server** using the command from the spec's `## User Journeys` section
+   (e.g., `npm run dev`). Wait for it to be ready.
+
+2. **For each journey in the spec:**
+   a. Open the app at the specified entry point (e.g., `http://localhost:3000`)
+   b. Execute each step in sequence:
+      - **Navigate steps:** Click the specified element, follow the navigation path
+      - **Action steps:** Fill forms, click buttons, trigger the feature
+      - **Checkpoint verification:** After each step, verify the checkpoint condition:
+        - Element is visible/present
+        - Page content matches expected state
+        - URL is correct
+        - Toast/notification appears
+        - Data is displayed correctly
+   c. Take a screenshot after each checkpoint as evidence
+   d. If any checkpoint fails: record the failure and continue to the next journey
+
+3. **For API-only journeys:** Execute the API call sequence using `curl` or equivalent,
+   verifying response status codes and bodies at each checkpoint.
+
+**Browser tool selection:** Same priority as Phase 2 interactive verification:
+1. `/browse` (gstack) — preferred
+2. `playwright-cli` — fallback
+3. Project CLAUDE.md overrides take precedence
+
+**Failure key format:** `integration/journey/{journey-name}:{step-number}:{description}`
+
+Examples:
+- `integration/journey/create-invoice:2:invoice-form-not-rendered`
+- `integration/journey/create-invoice:3:submit-button-missing`
+- `integration/journey/rate-limiting:2:expected-429-got-200`
+
+**Evidence:** Each journey failure MUST include:
+- Screenshot of the actual state at the failing checkpoint
+- Expected state (from the spec's checkpoint description)
+- URL at the time of failure
+- Console errors (if any)
+
+**Severity:** Each journey checkpoint failure is a BLOCKING failure. If a user can't
+reach or use the feature through the expected path, the implementation is incomplete.
+
+### Phase 3 Skip Conditions
+
+Phase 3 can be partially skipped when not applicable:
+- **3a (stubs):** Always runs. No skip condition.
+- **3b (dead exports):** Always runs. No skip condition.
+- **3c (connections):** Skipped if the architect contract has no `## Connections` section
+  (e.g., single-partition features with no cross-module wiring).
+- **3d (user journeys):** Skipped if the spec has no `## User Journeys` section.
+  The verifier should note "User journeys not defined — skipping smoke tests" in the report.
+
+## Failure Key Format (all phases)
+
+| Phase | Prefix | Check | Key Example |
+|-------|--------|-------|------------|
+| Guard | `guard/` | typecheck | `guard/typecheck/TS2345:src/payment.ts:42` |
+| Guard | `guard/` | test | `guard/test/existing-auth.test.ts:42` |
+| Feature | `tier1/` | typecheck | `tier1/typecheck/TS2345:src/payment.ts:42` |
+| Feature | `tier1/` | test | `tier1/test/payment.test.ts:42` |
+| Feature | `tier1/` | build | `tier1/build/esbuild-error:src/index.ts` |
+| Feature | `tier2/` | playwright | `tier2/playwright/login-page-404` |
+| Feature | `tier3/` | spec-check | `tier3/spec-check/api-returns-wrong-status` |
+| Feature | `plan/` | requirement | `plan/requirement-missing:rate-limiting` |
+| Feature | `plan/` | scope-creep | `plan/scope-creep:analytics-tracking` |
+| Integration | `integration/stub/` | stub | `integration/stub/src/api/invoices.ts:42:TODO` |
+| Integration | `integration/dead-export/` | dead export | `integration/dead-export/src/components/Form.tsx:Form` |
+| Integration | `integration/connection/` | connection | `integration/connection/POST /api/invoices→Form:not-called` |
+| Integration | `integration/journey/` | journey | `integration/journey/create-invoice:2:form-not-rendered` |
 
 ## Baseline Comparison
 
@@ -147,9 +378,19 @@ Mark verify tasks complete with structured metadata:
 ```json
 {
   "verdict": "PASS",
+  "guard_status": "pass",
+  "feature_metric": 85.1,
+  "metric_delta": 12.8,
+  "integration_completeness": {
+    "stubs_found": 0,
+    "dead_exports_found": 0,
+    "missing_connections": 0,
+    "journeys_passed": 3,
+    "journeys_total": 3
+  },
   "failure_keys": [],
   "prognosis": null,
-  "checks_run": "typecheck, lint, 47 tests, build, e2e, plan adherence",
+  "checks_run": "guards (4/4), feature (47 tests, build, e2e), integration (0 stubs, 0 dead, 3/3 journeys)",
   "baseline_excluded": 2
 }
 ```
@@ -159,9 +400,27 @@ or
 ```json
 {
   "verdict": "FAIL",
-  "failure_keys": ["tier1/test/payment.test.ts:42", "plan/requirement-missing:rate-limiting"],
+  "guard_status": "pass",
+  "feature_metric": 85.1,
+  "metric_delta": 12.8,
+  "integration_completeness": {
+    "stubs_found": 2,
+    "dead_exports_found": 1,
+    "missing_connections": 1,
+    "journeys_passed": 1,
+    "journeys_total": 3,
+    "journey_screenshots": ["verify-create-invoice-step2.png", "verify-create-invoice-step3.png"]
+  },
+  "failure_keys": [
+    "integration/stub/src/api/invoices.ts:42:TODO",
+    "integration/stub/src/services/email.ts:15:empty-function",
+    "integration/dead-export/src/components/InvoiceForm.tsx:InvoiceForm",
+    "integration/connection/POST /api/invoices→InvoiceForm:frontend-never-calls-endpoint",
+    "integration/journey/create-invoice:2:invoice-form-not-rendered",
+    "integration/journey/create-invoice:3:submit-returns-500"
+  ],
   "prognosis": "FIXABLE",
-  "checks_run": "typecheck, lint, 45 tests (2 failed)",
+  "checks_run": "guards (4/4), feature (47 tests, build), integration (2 stubs, 1 dead, 1 conn, 1/3 journeys)",
   "baseline_excluded": 2
 }
 ```

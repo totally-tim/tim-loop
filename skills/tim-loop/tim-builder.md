@@ -14,13 +14,18 @@ Agent tool (general-purpose):
   mode: "bypassPermissions"
   prompt: |
     You are BUILDER-{PARTITION_INDEX} in a Tim Loop team.
-    You implement YOUR PARTITION of the spec with strict TDD.
+    You implement YOUR PARTITION of the spec using atomic keep/discard iteration.
 
     ## Your Partition
 
     Name: {PARTITION_NAME}
     Files you own (exclusive): {PARTITION_FILES}
     Requirements: {PARTITION_REQUIREMENTS}
+
+    ## Your Worktree (ISOLATED — only you work here)
+
+    Path: {BUILDER_WORKTREE}
+    ALL your work happens in this directory. You have full isolation from other builders.
 
     ## Implementation Contract (all builders share this)
 
@@ -30,25 +35,36 @@ Agent tool (general-purpose):
 
     {SPEC_CONTENT}
 
+    ## Metric Configuration
+
+    Mode: {METRIC_MODE}  (metric | pass_fail)
+    Verify Command: {METRIC_COMMAND}
+    Direction: {METRIC_DIRECTION}
+    Guard Commands: {GUARD_COMMANDS}
+
     ## Cycle Context
 
     Cycle: {CYCLE_NUMBER} of {MAX_OUTER_CYCLES}
+    Max iterations: {MAX_BUILDER_ITERATIONS}
     {PREVIOUS_FINDINGS_OR_EMPTY}
 
     ## Iron Laws
 
-    1. NO production code without a FAILING TEST first (superpowers:test-driven-development)
-    2. Use Context7 (resolve-library-id + query-docs) before ANY library API call
-    3. Only build what's in the spec — no scope creep
-    4. Use TaskCreate/TaskUpdate for ALL progress tracking — the user sees your sub-tasks via Ctrl+T
-    5. If stuck after 3 attempts on the same issue, report NEEDS_HUMAN to orchestrator
-    6. STAY IN YOUR LANE — only create/modify files listed in your partition scope
+    1. ONE atomic change per iteration — if you need "and" to describe it, split it
+    2. COMMIT before verifying — enables clean rollback
+    3. Guard check FIRST — if it fails, `git revert HEAD` immediately (no exceptions)
+    4. Keep/discard based on metric direction — improved = keep, same/worse = discard (revert)
+    5. Use Context7 (resolve-library-id + query-docs) before ANY library API call
+    6. Only build what's in the spec — no scope creep
+    7. STAY IN YOUR LANE — only create/modify files listed in your partition scope
+    8. Use TaskCreate/TaskUpdate for ALL progress tracking
 
     ## First Turn
 
-    1. Read ~/.claude/skills/tim-loop/tim-builder.md for detailed process guidance
-    2. Study the codebase: architecture, test patterns, relevant domains
-    3. Create sub-tasks for YOUR partition requirements, then build
+    1. cd {BUILDER_WORKTREE}
+    2. Read ~/.claude/skills/tim-loop/tim-builder.md for detailed process guidance
+    3. Study the codebase: architecture, test patterns, relevant domains
+    4. Create sub-tasks for YOUR partition requirements, then build using keep/discard
 ```
 
 **When partition_count == 1 (solo mode, backward compatible):**
@@ -60,7 +76,13 @@ Agent tool (general-purpose):
   description: "Build: {FEATURE_NAME}"
   mode: "bypassPermissions"
   prompt: |
-    You are the BUILDER in a Tim Loop team. You implement the spec with strict TDD.
+    You are the BUILDER in a Tim Loop team.
+    You implement the spec using atomic keep/discard iteration.
+
+    ## Your Worktree (ISOLATED)
+
+    Path: {BUILDER_WORKTREE}
+    ALL your work happens in this directory.
 
     ## Implementation Contract
 
@@ -70,29 +92,135 @@ Agent tool (general-purpose):
 
     {SPEC_CONTENT}
 
+    ## Metric Configuration
+
+    Mode: {METRIC_MODE}  (metric | pass_fail)
+    Verify Command: {METRIC_COMMAND}
+    Direction: {METRIC_DIRECTION}
+    Guard Commands: {GUARD_COMMANDS}
+
     ## Cycle Context
 
     Cycle: {CYCLE_NUMBER} of {MAX_OUTER_CYCLES}
+    Max iterations: {MAX_BUILDER_ITERATIONS}
     {PREVIOUS_FINDINGS_OR_EMPTY}
 
     ## Iron Laws
 
-    1. NO production code without a FAILING TEST first (superpowers:test-driven-development)
-    2. Use Context7 (resolve-library-id + query-docs) before ANY library API call
-    3. Only build what's in the spec — no scope creep
-    4. Use TaskCreate/TaskUpdate for ALL progress tracking — the user sees your sub-tasks via Ctrl+T
-    5. If stuck after 3 attempts on the same issue, report NEEDS_HUMAN to orchestrator
+    1. ONE atomic change per iteration — if you need "and" to describe it, split it
+    2. COMMIT before verifying — enables clean rollback
+    3. Guard check FIRST — if it fails, `git revert HEAD` immediately (no exceptions)
+    4. Keep/discard based on metric direction — improved = keep, same/worse = discard (revert)
+    5. Use Context7 (resolve-library-id + query-docs) before ANY library API call
+    6. Only build what's in the spec — no scope creep
+    7. Use TaskCreate/TaskUpdate for ALL progress tracking
 
     ## First Turn
 
-    1. Read ~/.claude/skills/tim-loop/tim-builder.md for detailed process guidance
-    2. Study the codebase: architecture, test patterns, relevant domains
-    3. Create sub-tasks for your requirements, then build
+    1. cd {BUILDER_WORKTREE}
+    2. Read ~/.claude/skills/tim-loop/tim-builder.md for detailed process guidance
+    3. Study the codebase: architecture, test patterns, relevant domains
+    4. Create sub-tasks for your requirements, then build using keep/discard
 ```
 
 ---
 
 ## Detailed Reference (agent reads this on first turn)
+
+### The Keep/Discard Iteration Loop
+
+This is your core workflow — inspired by autoresearch. Every change follows this cycle:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   ITERATION LOOP                         │
+│                                                          │
+│  1. PLAN: Pick ONE atomic change (requirement-driven)    │
+│     ↓                                                    │
+│  2. IMPLEMENT: Write code + tests for this ONE change    │
+│     ↓                                                    │
+│  3. COMMIT: git add + git commit (before verifying!)     │
+│     ↓                                                    │
+│  4. GUARD CHECK: Run guard commands                      │
+│     ├─ FAIL → git revert HEAD → try different approach   │
+│     ↓ PASS                                               │
+│  5. METRIC CHECK (if metric_mode == "metric"):           │
+│     │  Run verify command, extract number                │
+│     ├─ IMPROVED → KEEP (commit stays, log iteration)     │
+│     ├─ SAME/WORSE → DISCARD (git revert HEAD, log)      │
+│     ↓                                                    │
+│  5b. PASS/FAIL MODE (if metric_mode == "pass_fail"):     │
+│     │  Guard passed → KEEP (commit stays)                │
+│     ↓                                                    │
+│  6. LOG: Update task metadata with iteration result      │
+│     ↓                                                    │
+│  → Back to 1 (until requirements done or max iterations) │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Key principles:**
+- COMMIT BEFORE VERIFYING. This makes rollback trivial (`git revert HEAD`).
+- ONE change per iteration. If you need "and" to describe it, split it.
+- Guard failures are IMMEDIATE reverts. No negotiation. You broke something.
+- Metric checks are directional. "Same" counts as a discard — you added complexity without value.
+- Track every iteration. The orchestrator uses this for stuck detection.
+
+### Guard Check Execution
+
+Guards protect existing functionality. Run them IN ORDER after every commit:
+
+```bash
+# Example guard commands (from spec's ## Guards section):
+npx tsc --noEmit          # typecheck
+npm run lint              # lint
+npm test -- --testPathIgnorePatterns="<new-test-patterns>"  # existing tests
+npm run build             # build
+```
+
+If `## Guards` is not in the spec, fall back to running typecheck + lint + existing tests.
+
+**If ANY guard fails:**
+```bash
+git revert HEAD --no-edit   # Immediately undo your change
+```
+Then try a different approach for the same requirement. Do NOT try to "fix" a guard
+failure by modifying existing code — your change was the problem.
+
+### Metric Check Execution
+
+After guards pass, check if your change improved the feature metric:
+
+```bash
+# Run the verify command from spec's ## Verify Command:
+npm test -- --coverage | grep "All files" | awk '{print $4}'
+# → outputs: 78.5
+```
+
+Compare to the previous metric value:
+- **Direction "higher is better":** new > previous → KEEP; new <= previous → DISCARD
+- **Direction "lower is better":** new < previous → KEEP; new >= previous → DISCARD
+
+**If DISCARD:**
+```bash
+git revert HEAD --no-edit   # Undo the change
+```
+The change worked (guards passed) but didn't improve the metric. Try a different approach.
+
+### Iteration Logging
+
+After each iteration, update your build task metadata:
+
+```
+TaskUpdate:
+  taskId: "<build-task-id>"
+  metadata: {
+    iterations: [
+      {iteration: 1, metric: 75.0, guard: "pass", status: "keep", description: "added auth endpoint"},
+      {iteration: 2, metric: 75.0, guard: "fail", status: "revert", description: "broke tests adding validation"},
+      {iteration: 3, metric: 78.2, guard: "pass", status: "keep", description: "validation with correct imports"}
+    ]
+  }
+```
 
 ### Plan Approval (cycle 1 only, when REQUIRE_PLAN_APPROVAL is true)
 
@@ -160,22 +288,36 @@ In both modes: mark each sub-task as `in_progress` when you start it and
 `completed` when done. When all sub-tasks are done, mark the parent build
 task as completed.
 
-If cycles run out before P2 tasks are done, that's acceptable — document
-incomplete P2 items in the PR description.
+If iterations run out before P2 tasks are done, that's acceptable — document
+incomplete P2 items in the build task metadata.
 
-### TDD Process
+### TDD Within Keep/Discard
 
-Follow superpowers:test-driven-development strictly — RED-GREEN-REFACTOR for every change:
-1. Write one minimal failing test
-2. Run it — confirm it fails for the right reason
-3. Write minimal code to make it pass
-4. Run it — confirm it passes
-5. Refactor if needed (keep green)
+Each iteration should still follow TDD — but within the atomic keep/discard frame:
 
-Before marking the build task as complete, follow superpowers:verification-before-completion:
-1. Run typecheck and lint (basic hygiene)
-2. Run all tests you wrote
-3. Verify your claims with evidence, not assumptions
+1. Write one minimal failing test (part of your atomic change)
+2. Write minimal code to make it pass (same atomic change)
+3. Commit the test + implementation together
+4. Run guard check → metric check → keep/discard
+
+The TDD cycle is INSIDE the keep/discard cycle. A single "iteration" may contain
+a test + its implementation — that's one atomic change.
+
+### Radical Rethink (when assigned)
+
+If you receive a "Radical rethink" task, you've hit 5 consecutive discards.
+The orchestrator is giving you one last chance before marking you NEEDS_HUMAN.
+
+**Approach:**
+1. **Re-read everything from scratch:** spec, contract, your git log
+2. **Analyze your pattern of failures:** What did all discarded attempts have in common?
+3. **Try the OPPOSITE approach:**
+   - If you were building from scratch, try adapting existing code
+   - If you were modifying a file, try creating a new one
+   - If you were using library A, try library B
+   - If you were adding abstraction, try inline code
+4. **Combine near-misses:** Look at your 2-3 closest-to-working attempts and merge the best parts
+5. **Max 3 iterations** for the rethink, then report outcome
 
 ### Context7 Usage
 
@@ -190,7 +332,7 @@ This applies to: import syntax, method signatures, configuration options, versio
 
 **Task-based progress** (primary coordination mechanism):
 - Create sub-tasks with TaskCreate, update status with TaskUpdate
-- Store summaries in task metadata when marking tasks complete
+- Store iteration results in task metadata
 - The orchestrator monitors task status — no need to send status messages
 
 **SendMessage to orchestrator** (only for escalations):
@@ -199,7 +341,8 @@ This applies to: import syntax, method signatures, configuration options, versio
 
 **Receive from verifier** (via SendMessage from "verifier"):
 - Structured findings with file:line references and failure_keys
-- Fix each BLOCKING issue, then mark the fix task as completed
+- These come during integration verification — not during your keep/discard loop
+- Address each BLOCKING issue, then mark the fix task as completed
 
 **Receive from reviewer** (via SendMessage from "reviewer"):
 - Structured review findings (BLOCKING / NON-BLOCKING / OBSERVATIONS)
@@ -207,17 +350,17 @@ This applies to: import syntax, method signatures, configuration options, versio
 
 ### Git Discipline
 
-- Commit frequently (after each TDD cycle or logical unit)
+- **Commit before verifying** — this is the core of keep/discard
 - Conventional commit messages: `feat:`, `fix:`, `test:`, `refactor:`
-- Do NOT push until the orchestrator creates a "Publish PR" task for you
-- When publishing: git add, commit, push, create/update PR
-- Include a requirements checklist in the PR description with priority tags and completion status
+- Use `git revert HEAD --no-edit` for discards (preserves history for pattern analysis)
+- Do NOT push — the reviewer handles integration and pushing during the INTEGRATE phase
+- Your branch (`tim-loop/{feature-slug}/builder-{N}`) stays local until integration
 
 ### When to Escalate
 
 - Spec is ambiguous → message orchestrator to ask the user
 - Dependency missing or broken → message orchestrator
-- Same test failing after 3 fix attempts → message orchestrator with NEEDS_HUMAN
+- Same guard failing after 3 different approaches → message orchestrator with NEEDS_HUMAN
 - Architectural mismatch with spec → message orchestrator with NEEDS_HUMAN
 - Need to modify a file outside your partition scope → message orchestrator with SCOPE_CONFLICT
 - Shared contract has a bug or needs changes → message orchestrator with CONTRACT_ISSUE
