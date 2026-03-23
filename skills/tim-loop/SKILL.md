@@ -129,6 +129,8 @@ For each agent, fill in the placeholders from their prompt template with:
 - `{BUILDER_WORKTREES}` — "None" on initial spawn; filled after builder worktrees are created
 - `{USER_JOURNEYS}` — from spec's `## User Journeys` section, or "None"
 - `{CONNECTIONS_MAP}` — from architect contract's `## Connections` section (filled after architect phase), or "None"
+- `{SPEC_REQUIREMENTS}` — the `## Requirements` section content from the spec (for embedding in review task)
+- `{SPEC_ACCEPTANCE_CRITERIA}` — the `## Acceptance Criteria` section content from the spec (for embedding in review task)
 - Other placeholders filled as the loop progresses
 
 The architect will study the codebase and produce the implementation contract.
@@ -403,7 +405,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     owner: verifier
 
   Wait for verifier to complete the verify task.
-  Read task metadata for: verdict, failure_keys, prognosis, feature_metric.
+  Read task metadata for: verdict, failure_keys, prognosis, feature_metric, plan_adherence.
 
   ## Log integration verification to TSV
   append_tsv_row(outer_cycle, "integration", 0, feature_metric, guard_status, verdict, "integrated verify")
@@ -455,6 +457,15 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     description: |
       Review PR #{pr_number} against the spec.
       Cycle {outer_cycle} of {MAX_OUTER_CYCLES}.
+      Integration worktree: {INTEGRATION_WORKTREE}
+
+      ## Spec Requirements (check EVERY one)
+
+      {SPEC_REQUIREMENTS}
+
+      ## Acceptance Criteria (check EVERY one)
+
+      {SPEC_ACCEPTANCE_CRITERIA}
 
       ## CI Checks (mandatory — do this FIRST)
 
@@ -468,15 +479,28 @@ while outer_cycle <= MAX_OUTER_CYCLES:
 
       ## Code Review
 
-      Check every spec requirement. Use structured findings.
+      Review code quality using `gh pr diff`. Use structured findings.
 
-      Report verdict, prognosis, CI status, finding count, and findings in task metadata:
+      ## Spec Completeness Audit (mandatory — do this AFTER code review)
+
+      Perform the Spec Completeness Audit from tim-reviewer.md. For EVERY requirement
+      and acceptance criterion listed above, search the integration worktree for
+      implementation evidence (grep for function names, routes, components) and test
+      evidence (grep test directories for test descriptions/assertions).
+
+      Produce a `requirement_audit` array in task metadata with per-requirement evidence:
+        { requirement, priority, status, impl_evidence, test_evidence }
+      Status: "IMPLEMENTED" (both evidence), "IMPL_ONLY" (no test), "MISSING" (neither)
+      ALL P0 must be "IMPLEMENTED" with both evidence fields for a PASS verdict.
+
+      Report verdict, prognosis, CI status, requirement_audit, and findings in task metadata:
         metadata: {
           verdict: "PASS"|"FAIL",
           prognosis: "...",
           blocking_count: N,
           ci_status: "pass"|"fail"|"timeout",
           ci_checks: { total: N, passed: N, failed: N, pending: N },
+          requirement_audit: [...],
           findings: [...]
         }
     owner: reviewer
@@ -484,9 +508,25 @@ while outer_cycle <= MAX_OUTER_CYCLES:
   Wait for reviewer to complete review task.
   Read task metadata for: verdict, prognosis, ci_status, ci_checks.
   reviewer_findings = task.metadata.findings
+  requirement_audit = task.metadata.requirement_audit
+
+  ## Validate requirement_audit before accepting any verdict
+  if requirement_audit is missing or empty:
+    Tell user: "Reviewer did not produce requirement_audit. Treating as FAIL."
+    verdict = "FAIL"
+    prognosis = "FIXABLE"
+  else:
+    ## Check all P0 requirements have status IMPLEMENTED with both evidence fields
+    p0_gaps = [r for r in requirement_audit if r.priority == "P0" and (r.status != "IMPLEMENTED" or not r.impl_evidence or not r.test_evidence)]
+    if p0_gaps and verdict == "PASS":
+      Tell user: "Reviewer reported PASS but {len(p0_gaps)} P0 requirement(s) lack full evidence. Overriding to FAIL."
+      verdict = "FAIL"
+      prognosis = "FIXABLE"
+      for gap in p0_gaps:
+        reviewer_findings.append({ severity: "BLOCKING", category: "missing-p0-evidence", description: "P0 '{gap.requirement}' status: {gap.status}", builder: null })
 
   if verdict == "PASS":
-    Tell user: "Review PASS (CI: {ci_checks.passed}/{ci_checks.total} green). PR #{pr_number} ready for human review."
+    Tell user: "Review PASS (CI: {ci_checks.passed}/{ci_checks.total} green, audit: all P0s verified). PR #{pr_number} ready for human review."
     ## Log final state to TSV
     append_tsv_row(outer_cycle, "review", 0, feature_metric, "pass", "PASS", "review approved")
     Tell user final metrics summary if metric_mode == "metric":
@@ -655,6 +695,8 @@ REFRESH_AGENTS(cycle_number, reviewer_findings_by_builder, pr_number, baseline, 
   Use the reviewer spawn template with added context:
     - {PR_NUMBER} = current PR number
     - {CYCLE_NUMBER} = cycle_number
+    - {SPEC_REQUIREMENTS} = spec requirements section content
+    - {SPEC_ACCEPTANCE_CRITERIA} = spec acceptance criteria section content
 
   ## 5. Spawn fresh builders (one per incomplete partition)
   For each partition where status not in ("completed", "needs_human"):
