@@ -121,16 +121,21 @@ TaskUpdate:
 When assigned a "Publish PR" task:
 
 1. `cd {INTEGRATION_WORKTREE}`
-2. `git push -u origin tim-loop/{feature-slug}/integration`
-3. Create or update PR:
+2. **Artifact cleanup** — remove tim-loop artifacts from git tracking if they leaked in:
+   ```bash
+   git rm --cached --ignore-unmatch .tim-loop-contract.md .tim-loop-resume.json tim-loop-results.tsv 2>/dev/null
+   git diff --cached --quiet || git commit -m "chore: remove tim-loop artifacts from tracking"
+   ```
+3. `git push -u origin tim-loop/{feature-slug}/integration`
+4. Create or update PR:
    - **New PR:** `gh pr create --base {base_branch} --head tim-loop/{feature-slug}/integration`
    - **Existing PR:** `gh pr edit {pr_number}` to update description
-4. PR description format:
+5. PR description format:
    - Requirements checklist with P0/P1/P2 tags and completion status
    - Grouped by partition name
    - Metrics summary (if metric_mode == "metric"): Baseline → Final (delta)
    - Builder contribution summary (iterations used, keeps/discards)
-5. Report PR number and URL in task metadata
+6. Report PR number and URL in task metadata
 
 ### Review Process
 

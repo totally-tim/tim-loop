@@ -438,6 +438,19 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     description: |
       The integration branch is verified. Push and create/update PR.
       Integration worktree: {INTEGRATION_WORKTREE}
+
+      ## Artifact Cleanup (do this FIRST, before pushing)
+
+      Remove tim-loop artifacts from git tracking if they leaked in:
+      ```bash
+      cd {INTEGRATION_WORKTREE}
+      git rm --cached --ignore-unmatch .tim-loop-contract.md .tim-loop-resume.json tim-loop-results.tsv 2>/dev/null
+      # If anything was unstaged, commit the removal
+      git diff --cached --quiet || git commit -m "chore: remove tim-loop artifacts from tracking"
+      ```
+
+      ## Push and PR
+
       {If pr_number == null: "Push the integration branch and create a new PR against {base_branch}.
        Include spec requirements as a checklist in the PR description.
        Mark P0/P1/P2 items with their priority. Check off completed items.
@@ -480,6 +493,21 @@ while outer_cycle <= MAX_OUTER_CYCLES:
          - Map failures to owning builders by file path when possible
       4. Each failing CI check = a BLOCKING finding (category: "ci-failure")
       5. CI must be fully green for a PASS verdict
+
+      ## Artifact Check (do this BEFORE code review)
+
+      Verify no tim-loop artifacts leaked into the diff:
+      ```bash
+      gh pr diff {PR_NUMBER} | grep -q '\.tim-loop-contract\.md\|\.tim-loop-resume\.json\|tim-loop-results\.tsv'
+      ```
+      If any match: BLOCKING finding (category: "artifact-in-diff", description: "{filename} is in the diff — this is a tim-loop artifact that shouldn't ship").
+      The publish step should have cleaned these up. If found, remove them:
+      ```bash
+      cd {INTEGRATION_WORKTREE}
+      git rm --cached --ignore-unmatch .tim-loop-contract.md .tim-loop-resume.json tim-loop-results.tsv 2>/dev/null
+      git diff --cached --quiet || git commit -m "chore: remove tim-loop artifacts from tracking" && git push
+      ```
+      Then re-check `gh pr diff` to confirm they're gone before continuing.
 
       ## Code Review
 
