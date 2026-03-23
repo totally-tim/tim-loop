@@ -187,19 +187,50 @@ If metric_mode == "metric" and the spec has a `## Verify Command`:
 
 ### Plan Adherence Check
 
-After all automated checks pass, review the implementation against the spec:
+After all automated checks pass, verify the implementation against the spec with structured,
+per-requirement evidence. This is the primary defense against incomplete implementations.
 
-1. **Requirements coverage:** Read each requirement in the spec. For each, verify there is corresponding code AND a test. Track by priority level.
-2. **Architecture match:** Compare the implementation's file structure and patterns against the spec's Architecture section.
-3. **Acceptance criteria:** For each criterion, verify it is both implemented and tested.
-4. **Scope check:** Look for code that doesn't map to any requirement (scope creep). Flag extra features.
-5. **Out of scope respect:** Verify nothing in the Out of Scope section was implemented.
+**For each requirement in the spec's `## Requirements` section:**
+
+1. Extract the requirement text and priority tag (`[P0]`/`[P1]`/`[P2]`)
+2. Search the integration worktree for **implementation evidence:**
+   - `grep -rn` for key identifiers that would exist if the requirement were implemented
+     (function names, route paths, component names, class names, error strings, API endpoints)
+   - If found: record `file:line` as `impl_evidence`
+   - If NOT found: `impl_evidence = null`
+3. Search test directories for **test evidence:**
+   - `grep -rn` for test descriptions, assertions, or test function names covering the requirement
+   - If found: record `file:line` as `test_evidence`
+   - If NOT found: `test_evidence = null`
+4. Determine status:
+   - Both found → `"IMPLEMENTED"`
+   - impl_evidence found, no test_evidence → `"IMPL_ONLY"`
+   - Neither found → `"MISSING"`
+
+**For each item in the spec's `## Acceptance Criteria` section:**
+- Apply the same search-and-evidence process
+
+**Build the `plan_adherence` array** and include it in task metadata:
+```json
+{
+  "plan_adherence": [
+    { "requirement": "[P0] Rate limiting on auth endpoints", "priority": "P0", "status": "IMPLEMENTED", "impl_evidence": "src/middleware/rateLimit.ts:15", "test_evidence": "tests/middleware/rateLimit.test.ts:8" },
+    { "requirement": "[P0] JWT validation", "priority": "P0", "status": "MISSING", "impl_evidence": null, "test_evidence": null },
+    { "requirement": "[P1] Error toast on failed login", "priority": "P1", "status": "IMPL_ONLY", "impl_evidence": "src/components/LoginForm.tsx:88", "test_evidence": null }
+  ]
+}
+```
+
+**Additional checks (after requirement evidence):**
+1. **Architecture match:** Compare the implementation's file structure and patterns against the spec's Architecture section.
+2. **Scope check:** Look for code that doesn't map to any requirement (scope creep). Flag extra features.
+3. **Out of scope respect:** Verify nothing in the Out of Scope section was implemented.
 
 ### Priority-Aware Adherence
 
-- **P0 missing** → FAIL with failure_key `plan/requirement-missing:{requirement-slug}`
-- **P1 missing** → Flag but don't FAIL (report as non-blocking)
-- **P2 missing** → Note as observation (acceptable if iterations ran low)
+- **P0 `MISSING` or `IMPL_ONLY`** → FAIL with failure_key `plan/requirement-missing:{requirement-slug}`
+- **P1 `MISSING`** → Flag but don't FAIL (report as non-blocking)
+- **P2 `MISSING`** → Note as observation (acceptable if iterations ran low)
 
 ## Phase 3: Integration Completeness
 
@@ -381,6 +412,10 @@ Mark verify tasks complete with structured metadata:
   "guard_status": "pass",
   "feature_metric": 85.1,
   "metric_delta": 12.8,
+  "plan_adherence": [
+    { "requirement": "[P0] Rate limiting", "priority": "P0", "status": "IMPLEMENTED", "impl_evidence": "src/middleware/rateLimit.ts:15", "test_evidence": "tests/middleware/rateLimit.test.ts:8" },
+    { "requirement": "[P1] Error toast", "priority": "P1", "status": "IMPLEMENTED", "impl_evidence": "src/components/ErrorToast.tsx:22", "test_evidence": "tests/components/ErrorToast.test.tsx:10" }
+  ],
   "integration_completeness": {
     "stubs_found": 0,
     "dead_exports_found": 0,
@@ -390,7 +425,7 @@ Mark verify tasks complete with structured metadata:
   },
   "failure_keys": [],
   "prognosis": null,
-  "checks_run": "guards (4/4), feature (47 tests, build, e2e), integration (0 stubs, 0 dead, 3/3 journeys)",
+  "checks_run": "guards (4/4), feature (47 tests, build, e2e), adherence (5/5 P0, 3/3 P1), integration (0 stubs, 0 dead, 3/3 journeys)",
   "baseline_excluded": 2
 }
 ```
@@ -403,6 +438,11 @@ or
   "guard_status": "pass",
   "feature_metric": 85.1,
   "metric_delta": 12.8,
+  "plan_adherence": [
+    { "requirement": "[P0] Rate limiting", "priority": "P0", "status": "IMPLEMENTED", "impl_evidence": "src/middleware/rateLimit.ts:15", "test_evidence": "tests/middleware/rateLimit.test.ts:8" },
+    { "requirement": "[P0] JWT validation", "priority": "P0", "status": "MISSING", "impl_evidence": null, "test_evidence": null },
+    { "requirement": "[P1] Error toast", "priority": "P1", "status": "IMPL_ONLY", "impl_evidence": "src/components/ErrorToast.tsx:22", "test_evidence": null }
+  ],
   "integration_completeness": {
     "stubs_found": 2,
     "dead_exports_found": 1,
@@ -412,6 +452,7 @@ or
     "journey_screenshots": ["verify-create-invoice-step2.png", "verify-create-invoice-step3.png"]
   },
   "failure_keys": [
+    "plan/requirement-missing:jwt-validation",
     "integration/stub/src/api/invoices.ts:42:TODO",
     "integration/stub/src/services/email.ts:15:empty-function",
     "integration/dead-export/src/components/InvoiceForm.tsx:InvoiceForm",
@@ -420,7 +461,7 @@ or
     "integration/journey/create-invoice:3:submit-returns-500"
   ],
   "prognosis": "FIXABLE",
-  "checks_run": "guards (4/4), feature (47 tests, build), integration (2 stubs, 1 dead, 1 conn, 1/3 journeys)",
+  "checks_run": "guards (4/4), feature (47 tests, build), adherence (1/2 P0, 0/1 P1), integration (2 stubs, 1 dead, 1 conn, 1/3 journeys)",
   "baseline_excluded": 2
 }
 ```

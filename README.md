@@ -24,11 +24,14 @@ THE LOOP (up to 3 cycles):
                   Guard check after each merge. Identifies which merge broke what.
   3. VERIFY       Three-phase verification on integrated build:
                   Phase 1: Guard check (baseline invariants, non-negotiable).
-                  Phase 2: Feature verification (metric tracking, plan adherence).
+                  Phase 2: Feature verification (metric tracking, structured plan adherence
+                           with per-requirement evidence).
                   Phase 3: Integration completeness (stubs, dead code, connections,
                            user journey smoke tests in real browser).
   4. PUBLISH      Push integration branch, create/update PR with priority checklist.
   5. REVIEW       Reviewer checks PR diff against spec by priority.
+                  Spec Completeness Audit: requirement-by-requirement codebase search
+                  for implementation + test evidence. Orchestrator validates audit.
 
   PASS --> Done. PR ready for human review.
   FAIL --> All agents shut down, fresh agents spawned for next cycle.
@@ -42,7 +45,7 @@ THE LOOP (up to 3 cycles):
 | Architect | Explore codebase, write shared contracts to integration branch, partition work into N scopes | Writes shared contracts. Shuts down after planning. |
 | Builder(s) | Implement partition with keep/discard iteration in isolated worktree | Read/write scoped to partition files in own worktree. |
 | Verifier | Three-phase verification: guards, feature checks, integration completeness (stubs, dead code, connections, user journeys) | Read-only. Cannot edit files. Operates across worktrees. |
-| Reviewer | Merge builder branches into integration, review PR diff against spec | Git merge + GitHub CLI. Can request screenshots. |
+| Reviewer | Merge builder branches into integration, review PR diff against spec, run Spec Completeness Audit (requirement-by-requirement evidence search) | Git merge + GitHub CLI for code review. Local file reads in integration worktree for completeness audit. |
 
 The orchestrator is a **thin coordinator** — it creates tasks, reads task metadata, and makes decisions. It never reads code or runs tests. Progress is visible in real time via `Ctrl+T` (task list).
 
@@ -320,6 +323,7 @@ Other optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessm
 - **Parallel builders** — N builders work simultaneously, each with a focused context window scoped to their partition.
 - **Task-driven coordination** — agents use TaskCreate/TaskUpdate. Progress visible via `Ctrl+T`.
 - **Baseline verification** — pre-existing failures and metric values recorded before building. No false negatives.
+- **Spec Completeness Audit** — reviewer performs requirement-by-requirement codebase search for implementation and test evidence. Produces a structured `requirement_audit` array. Any P0 without both implementation and test evidence is BLOCKING. The orchestrator independently validates the audit before accepting a PASS verdict — defense in depth across verifier, reviewer, and orchestrator.
 - **Priority requirements** — `[P0]`/`[P1]`/`[P2]` tags determine build order and review strictness.
 - **3-tier verification** — (1) Always: typecheck, lint, tests, build. (2) Platform-detected: Playwright, xctest, e2e. (3) Spec overrides.
 - **Configurable loop** — spec overrides for cycles, iterations, builder count, metric mode, and more.

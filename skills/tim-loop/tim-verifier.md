@@ -233,6 +233,10 @@ TaskUpdate:
     guard_status: "pass",
     feature_metric: 85.1,
     metric_delta: +12.8,
+    plan_adherence: [
+      { requirement: "[P0] Rate limiting", priority: "P0", status: "IMPLEMENTED", impl_evidence: "src/middleware/rateLimit.ts:15", test_evidence: "tests/middleware/rateLimit.test.ts:8" },
+      { requirement: "[P1] Error toast", priority: "P1", status: "IMPLEMENTED", impl_evidence: "src/components/ErrorToast.tsx:22", test_evidence: "tests/components/ErrorToast.test.tsx:10" }
+    ],
     integration_completeness: {
       stubs_found: 0,
       dead_exports_found: 0,
@@ -242,7 +246,7 @@ TaskUpdate:
     },
     failure_keys: [],
     prognosis: null,
-    checks_run: "guards (4/4), feature (47 tests, build, e2e), integration (0 stubs, 0 dead, 3/3 journeys)",
+    checks_run: "guards (4/4), feature (47 tests, build, e2e), adherence (5/5 P0, 3/3 P1), integration (0 stubs, 0 dead, 3/3 journeys)",
     baseline_excluded: 2
   }
 ```
@@ -258,6 +262,10 @@ TaskUpdate:
     guard_status: "pass",
     feature_metric: 85.1,
     metric_delta: +12.8,
+    plan_adherence: [
+      { requirement: "[P0] Rate limiting", priority: "P0", status: "IMPLEMENTED", impl_evidence: "src/middleware/rateLimit.ts:15", test_evidence: "tests/middleware/rateLimit.test.ts:8" },
+      { requirement: "[P0] JWT validation", priority: "P0", status: "MISSING", impl_evidence: null, test_evidence: null }
+    ],
     integration_completeness: {
       stubs_found: 1,
       dead_exports_found: 1,
@@ -267,12 +275,13 @@ TaskUpdate:
       journey_screenshots: ["verify-create-invoice-step2.png"]
     },
     failure_keys: [
+      "plan/requirement-missing:jwt-validation",
       "integration/stub/src/api/invoices.ts:42:TODO",
       "integration/dead-export/src/components/InvoiceForm.tsx:InvoiceForm",
       "integration/journey/create-invoice:2:form-not-rendered"
     ],
     prognosis: "FIXABLE",
-    checks_run: "guards (4/4), feature (47 tests, build), integration (1 stub, 1 dead, 1/3 journeys)",
+    checks_run: "guards (4/4), feature (47 tests, build), adherence (1/2 P0), integration (1 stub, 1 dead, 1/3 journeys)",
     baseline_excluded: 2
   }
 ```
@@ -289,8 +298,10 @@ Detailed findings using this format:
 ### FEATURE FAILURES
 - tier/check file:line -- Description [key: tier1/test/payment.test.ts:42]
 
-### PLAN ADHERENCE
-- requirement "X" -- Status: implemented/missing/partial
+### PLAN ADHERENCE (per-requirement evidence)
+- [P0] "Rate limiting" -- IMPLEMENTED (src/middleware/rateLimit.ts:15, test: tests/middleware/rateLimit.test.ts:8)
+- [P0] "JWT validation" -- MISSING (no implementation found) [key: plan/requirement-missing:jwt-validation]
+- [P1] "Error toast" -- IMPL_ONLY (src/components/ErrorToast.tsx:22, test: none)
 - scope creep: file:line -- Description (if any)
 
 ### INTEGRATION COMPLETENESS

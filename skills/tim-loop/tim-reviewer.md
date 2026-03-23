@@ -35,7 +35,7 @@ Agent tool (general-purpose):
 
     1. Integration: merge builder branches ONE AT A TIME, run guards after each
     2. If a merge breaks guards, identify WHICH merge caused the break
-    3. GitHub CLI only (`gh pr diff`, `gh pr view`) for review — NEVER read local files directly
+    3. GitHub CLI (`gh pr diff`, `gh pr view`) for code quality review. Local file reads (grep/read in integration worktree) are permitted ONLY during the Spec Completeness Audit
     4. NEVER approve a PR that's missing P0 spec requirements
     5. Check every spec requirement against the diff, respecting priority levels
     6. Use structured findings format (BLOCKING / NON-BLOCKING / OBSERVATIONS)
@@ -165,7 +165,12 @@ When assigned a "Review PR" task:
    - Request screenshots from the verifier via SendMessage if the PR touches UI
    - "REQUEST_SCREENSHOT: Please capture /page-path and send me the file path"
    - Review the screenshot for visual correctness
-8. **Render verdict.**
+8. **Spec Completeness Audit** (mandatory — do this AFTER code quality review):
+   Perform a structured, requirement-by-requirement audit. This catches requirements
+   that were never implemented — something invisible in the diff alone.
+   See the "Spec Completeness Audit" section below for the full process.
+9. **Render verdict.** A PASS requires: CI green, no BLOCKING findings, AND all P0
+   requirements showing status `IMPLEMENTED` in the `requirement_audit`.
 
 Foundation: Use superpowers:requesting-code-review as your review methodology.
 
@@ -175,6 +180,54 @@ Before judging dependency usage in the diff:
 1. Call resolve-library-id to find the library
 2. Call query-docs to verify the current API surface
 Use this to catch outdated API usage in the PR.
+
+### Spec Completeness Audit
+
+After the code quality review, perform a structured requirement-by-requirement audit.
+The diff shows what changed, but if a requirement was never implemented there is nothing
+in the diff to flag it. This audit searches the actual codebase for evidence.
+
+**For each requirement in the task description's "Spec Requirements" list:**
+
+1. Extract the requirement text and priority tag (`[P0]`/`[P1]`/`[P2]`)
+2. Search the integration worktree (`{INTEGRATION_WORKTREE}`) for **implementation evidence:**
+   - `grep -rn` for key identifiers that would exist if implemented (function names, route
+     paths, component names, class names, error strings, API endpoints)
+   - If found: record `file:line` as `impl_evidence`
+   - If NOT found: `impl_evidence = null`
+3. Search test directories for **test evidence:**
+   - `grep -rn` for test descriptions, assertions, or test function names covering the requirement
+   - If found: record `file:line` as `test_evidence`
+   - If NOT found: `test_evidence = null`
+4. Determine status:
+   - Both impl_evidence AND test_evidence found → `"IMPLEMENTED"`
+   - impl_evidence found but no test_evidence → `"IMPL_ONLY"`
+   - Neither found → `"MISSING"`
+
+**For each acceptance criterion** in the task description's "Acceptance Criteria" list:
+- Apply the same search-and-evidence process
+
+**Build the `requirement_audit` array** for task metadata:
+```json
+[
+  { "requirement": "[P0] JWT refresh token rotation", "priority": "P0", "status": "IMPLEMENTED",
+    "impl_evidence": "src/auth/jwt.ts:42", "test_evidence": "tests/auth/jwt.test.ts:15" },
+  { "requirement": "[P0] Rate limiting on auth endpoints", "priority": "P0", "status": "MISSING",
+    "impl_evidence": null, "test_evidence": null },
+  { "requirement": "[P1] Error toast on failed login", "priority": "P1", "status": "IMPL_ONLY",
+    "impl_evidence": "src/components/LoginForm.tsx:88", "test_evidence": null }
+]
+```
+
+**Verdict impact:**
+- Any P0 with status `MISSING` or `IMPL_ONLY` → BLOCKING finding (category: `missing-p0-evidence`)
+- Any P1 with status `MISSING` → NON-BLOCKING finding
+- P2 statuses are OBSERVATIONS only
+- A PASS verdict requires ALL P0 requirements to show `IMPLEMENTED` with both evidence fields
+
+**Important:** Use `grep` / file reads in the integration worktree for this audit. This is the
+ONE exception to the GitHub-CLI-only rule. The diff tells you what changed; the worktree tells
+you what exists.
 
 ### Communication Protocol
 
@@ -206,9 +259,11 @@ TaskUpdate:
     non_blocking_count: 0,
     ci_status: "pass",
     ci_checks: { total: 4, passed: 4, failed: 0, pending: 0 },
-    p0_coverage: "5/5",
-    p1_coverage: "3/3",
-    p2_coverage: "1/2",
+    requirement_audit: [
+      { requirement: "[P0] JWT refresh", priority: "P0", status: "IMPLEMENTED", impl_evidence: "src/auth/jwt.ts:42", test_evidence: "tests/auth/jwt.test.ts:15" },
+      { requirement: "[P0] Session management", priority: "P0", status: "IMPLEMENTED", impl_evidence: "src/auth/session.ts:10", test_evidence: "tests/auth/session.test.ts:8" },
+      { requirement: "[P1] Error toast", priority: "P1", status: "IMPLEMENTED", impl_evidence: "src/components/ErrorToast.tsx:22", test_evidence: "tests/components/ErrorToast.test.tsx:10" }
+    ],
     findings: []
   }
 ```
@@ -222,13 +277,14 @@ On FAIL, include structured findings the orchestrator can route by builder:
     non_blocking_count: 1,
     ci_status: "fail",
     ci_checks: { total: 4, passed: 2, failed: 2, pending: 0 },
-    p0_coverage: "3/5",
-    p1_coverage: "2/3",
-    p2_coverage: "0/2",
+    requirement_audit: [
+      { requirement: "[P0] JWT refresh", priority: "P0", status: "IMPLEMENTED", impl_evidence: "src/auth/jwt.ts:42", test_evidence: "tests/auth/jwt.test.ts:15" },
+      { requirement: "[P0] Rate limiting", priority: "P0", status: "MISSING", impl_evidence: null, test_evidence: null },
+      { requirement: "[P1] Error toast", priority: "P1", status: "IMPL_ONLY", impl_evidence: "src/components/ErrorToast.tsx:22", test_evidence: null }
+    ],
     findings: [
       { severity: "BLOCKING", category: "ci-failure", check_name: "build", state: "FAILURE", url: "https://github.com/.../actions/runs/123", description: "CI check 'build' failed", builder: null },
-      { severity: "BLOCKING", category: "missing-p0", file: "src/auth/jwt.ts", line: 42, description: "JWT refresh not implemented", builder: "builder-1" },
-      { severity: "BLOCKING", category: "missing-test", file: "src/payments/refund.ts", line: 15, description: "No test for refund edge case", builder: "builder-2" },
+      { severity: "BLOCKING", category: "missing-p0-evidence", description: "[P0] Rate limiting: no implementation or test found", builder: null },
       { severity: "NON-BLOCKING", category: "naming", file: "src/api/routes.ts", line: 8, description: "Route naming inconsistent with codebase convention", builder: "builder-1" }
     ]
   }
@@ -257,10 +313,11 @@ Detailed findings:
 - Checks: {passed}/{total} passed, {failed} failed
 - Failing checks: {check_name_1} (FAILURE), {check_name_2} (FAILURE)
 
-### PRIORITY COVERAGE
-- P0: 5/5 implemented and tested
-- P1: 2/3 implemented (missing: error toast tests)
-- P2: 0/2 not started (acceptable if iterations exhausted)
+### SPEC COMPLETENESS AUDIT (per-requirement evidence)
+- [P0] JWT refresh: IMPLEMENTED (src/auth/jwt.ts:42, test: tests/auth/jwt.test.ts:15)
+- [P0] Rate limiting: MISSING -- no implementation or test found
+- [P1] Error toast: IMPL_ONLY (src/components/ErrorToast.tsx:22, test: none)
+- [P2] Analytics: MISSING -- acceptable if iterations exhausted
 
 ### METRICS (if metric_mode == "metric")
 - Baseline: {baseline_metric}
