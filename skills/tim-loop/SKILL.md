@@ -79,9 +79,13 @@ Create an **integration worktree** — this is the central branch where all work
 git worktree add <worktree-base>/integration -b tim-loop/{feature-slug}/integration
 
 # Exclude tim-loop artifacts from git tracking
-echo '.tim-loop-contract.md' >> <integration-worktree>/.git/info/exclude
-echo '.tim-loop-resume.json' >> <integration-worktree>/.git/info/exclude
-echo 'tim-loop-results.tsv' >> <integration-worktree>/.git/info/exclude
+# IMPORTANT: In a worktree, .git is a FILE (not a directory) containing "gitdir: <path>".
+# We must resolve the actual gitdir path to find info/exclude.
+WORKTREE_GITDIR=$(sed 's/^gitdir: //' < <integration-worktree>/.git)
+mkdir -p "$WORKTREE_GITDIR/info"
+echo '.tim-loop-contract.md' >> "$WORKTREE_GITDIR/info/exclude"
+echo '.tim-loop-resume.json' >> "$WORKTREE_GITDIR/info/exclude"
+echo 'tim-loop-results.tsv' >> "$WORKTREE_GITDIR/info/exclude"
 ```
 
 Record the `base_branch` (the branch HEAD was on before worktree creation).
