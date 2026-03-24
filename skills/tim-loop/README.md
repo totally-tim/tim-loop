@@ -15,31 +15,37 @@ You write a spec  -->  Worktree created  -->  Architect partitions work  -->  N 
 4. **VERIFY** — Independent verifier runs checks against combined output, compares against baseline
 5. **FIX** — If verify fails, failures are routed to the owning builder by file path. Per-builder stagnation detection
 6. **PUBLISH** — Code committed, pushed, PR created/updated with priority checklist from all partitions
-7. **REVIEW** — Reviewer checks PR diff against spec with priority-aware coverage tracking
-8. If review fails, all agents are shut down and fresh agents are spawned with the reviewer's findings for the next cycle
+7. **REVIEW** — Reviewer checks CI + code quality while Auditor performs deep spec completeness review (in parallel). Cross-agent triangulation catches when grep-based evidence was fooled by stubs.
+8. If review fails, all agents are shut down and fresh agents are spawned with combined reviewer + auditor findings for the next cycle
 
-**Four agent roles:**
+**Five agent roles:**
 - **Architect** — explores codebase, creates implementation contract with shared types and partitions, shuts down after planning
 - **Builder(s)** — N parallel builders, each scoped to their own files, implementing with TDD
 - **Verifier** — runs all checks independently, can't edit code, reports structured failure_keys
-- **Reviewer** — reviews PR diff via `gh` CLI, can request screenshots from verifier
+- **Reviewer** — checks CI status and code quality via `gh` CLI
+- **Auditor** — deep spec completeness review by reading actual source files, classifying implementations as REAL/STUB/MISSING and tests as THOROUGH/SHALLOW/MISSING, with per-requirement confidence scoring
 
 The orchestrator coordinates via a shared task list (`Ctrl+T` to see progress) — it never reads code or runs tests.
 
-## Key Features (v3 — Builder Swarm)
+## Key Features (v3 — Builder Swarm + Deep Audit)
 
 - **Parallel builders** — architect partitions work across N builders with non-overlapping file scopes. Each builder gets a focused context window.
 - **Architect agent** — dedicated agent explores the codebase, writes shared types/interfaces to disk, and creates an implementation contract before builders start.
+- **Deep spec audit** — dedicated auditor agent reads actual source files (not just grep) to classify implementations as REAL/STUB/MISSING and tests as THOROUGH/SHALLOW/MISSING, with per-requirement confidence scoring (HIGH/MEDIUM/LOW).
+- **Parallel review** — reviewer (CI + code quality) and auditor (spec completeness) run simultaneously. Both must pass. Zero added wall-clock time.
+- **Cross-agent triangulation** — orchestrator compares the verifier's grep-based evidence with the auditor's source-reading assessment. Disagreements (verifier says IMPLEMENTED, auditor says STUB) become high-priority findings.
+- **Contract usage verification** — auditor verifies that the architect's shared types/interfaces are actually imported by consuming partitions.
+- **Entry-point reachability tracing** — auditor traces new features from the app's entry point through routing and navigation to catch orphaned components that pass tests but are invisible to users.
+- **PR compliance report** — auditor produces a human-readable spec compliance table posted to the PR description with per-requirement evidence.
 - **File-scoped routing** — verification failures are routed to the owning builder by file path. Builders only fix issues in their partition.
 - **Per-builder stagnation** — stagnation detection is per-builder. A stagnant builder can be isolated while others continue.
 - **Backward compatible** — when the architect produces 1 partition, falls back to single-builder behavior with no scope restrictions.
 - **Task-driven coordination** — agents use TaskCreate/TaskUpdate instead of message-passing. Progress visible in real time via `Ctrl+T`.
 - **Baseline verification** — pre-existing failures are recorded before building, preventing false negatives.
 - **Priority-based requirements** — `[P0]`/`[P1]`/`[P2]` tags determine build order and review strictness.
-- **Incremental verification** — on retry, previously-failed checks run first before the full suite.
 - **Configurable loop** — spec can override `max_outer_cycles`, `max_inner_retries`, `builder_count`, `max_builders`, and more.
 - **Agent refresh between cycles** — all agents are shut down and re-spawned with fresh context windows between outer cycles. Prevents context bloat from accumulated fix attempts. Verifier discovery (test runners, commands) is carried forward so fresh verifiers skip re-discovery.
-- **Abort and resume** — on abort, per-partition state is saved to `.tim-loop-resume.json`. Resume spawns builders only for incomplete partitions.
+- **Abort and resume** — on abort, per-partition state (including auditor findings) is saved to `.tim-loop-resume.json`. Resume spawns builders only for incomplete partitions.
 - **Visual review** — reviewer can request screenshots from the verifier for UI changes.
 
 ## Installation
@@ -79,6 +85,7 @@ Start a new Claude Code session — `/tim-spec` and `/tim-loop` will appear in a
 │   ├── tim-builder.md     # Builder agent prompt + reference
 │   ├── tim-verifier.md    # Verifier agent prompt + reference
 │   ├── tim-reviewer.md    # Reviewer agent prompt + reference
+│   ├── tim-auditor.md     # Auditor agent prompt + reference
 │   ├── tim-verify.md      # 3-tier verification strategy
 │   └── README.md          # This file
 ├── tim-spec/
@@ -112,11 +119,11 @@ Architect approved. Spawning 3 builders...
 Cycle 1/3: Build complete (3/3 builders done). Starting verify...
 Cycle 1/3: Verify FAIL (attempt 2/5, FIXABLE). Routing fixes to 2 builder(s)...
 Cycle 1/3: Verify PASS. Publishing PR...
-Cycle 1/3: Review FAIL (1 blocking). Refreshing agents for cycle 2...
-Cycle 1/3: Agents refreshed (3 builders, verifier, reviewer). Starting cycle 2...
+Cycle 1/3: Reviewing PR #47 (reviewer: CI+quality, auditor: deep spec audit)...
+Cycle 1/3: Reviewer PASS. Auditor found 1 P0 stub. Refreshing agents for cycle 2...
 Cycle 2/3: Build complete (3/3 builders done). Starting verify...
 Cycle 2/3: Verify PASS. Publishing PR...
-Cycle 2/3: Review PASS. PR #47 ready for human review.
+Cycle 2/3: Review PASS (CI: 4/4 green, audit: 8 HIGH / 0 MEDIUM confidence). PR #47 ready for human review.
 ```
 
 ### Resume after abort
