@@ -107,6 +107,7 @@ Read these files from the skill directory (`~/.claude/skills/tim-loop/`):
 - `tim-builder.md` — builder agent prompt template
 - `tim-verifier.md` — verifier agent prompt template
 - `tim-reviewer.md` — reviewer agent prompt template
+- `tim-auditor.md` — auditor agent prompt template
 - `tim-verify.md` — verification strategy reference
 
 ### Step 5: Spawn Initial Agents
@@ -466,23 +467,26 @@ while outer_cycle <= MAX_OUTER_CYCLES:
   Wait for reviewer to complete publish task.
   Read pr_number from task metadata.
 
-  ## 5. REVIEW
+  ## 5. REVIEW (parallel: reviewer + auditor)
   Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Reviewing PR #{pr_number}..."
 
-  TaskCreate:
+  ## Spawn auditor just-in-time (fresh context window for deep spec review)
+  Agent tool (general-purpose):
+    name: "auditor"
+    team_name: "{TEAM_NAME}"
+    description: "Audit: {FEATURE_NAME}"
+    mode: "bypassPermissions"
+    prompt: (filled from tim-auditor.md template with all placeholders)
+
+  ## Create TWO tasks in parallel — reviewer handles CI + code quality,
+  ## auditor handles deep spec completeness. Both must pass.
+
+  TaskCreate (reviewer task):
     subject: "Review PR #{pr_number} (cycle {outer_cycle})"
     description: |
-      Review PR #{pr_number} against the spec.
+      Review PR #{pr_number} for CI status and code quality.
       Cycle {outer_cycle} of {MAX_OUTER_CYCLES}.
       Integration worktree: {INTEGRATION_WORKTREE}
-
-      ## Spec Requirements (check EVERY one)
-
-      {SPEC_REQUIREMENTS}
-
-      ## Acceptance Criteria (check EVERY one)
-
-      {SPEC_ACCEPTANCE_CRITERIA}
 
       ## CI Checks (mandatory — do this FIRST)
 
@@ -494,71 +498,155 @@ while outer_cycle <= MAX_OUTER_CYCLES:
       4. Each failing CI check = a BLOCKING finding (category: "ci-failure")
       5. CI must be fully green for a PASS verdict
 
-      ## Artifact Check (do this BEFORE code review)
+      ## Artifact Check (pure verification — do NOT modify the worktree)
 
       Verify no tim-loop artifacts leaked into the diff:
       ```bash
       gh pr diff {PR_NUMBER} | grep -q '\.tim-loop-contract\.md\|\.tim-loop-resume\.json\|tim-loop-results\.tsv'
       ```
-      If any match: BLOCKING finding (category: "artifact-in-diff", description: "{filename} is in the diff — this is a tim-loop artifact that shouldn't ship").
-      The publish step should have cleaned these up. If found, remove them:
-      ```bash
-      cd {INTEGRATION_WORKTREE}
-      git rm --cached --ignore-unmatch .tim-loop-contract.md .tim-loop-resume.json tim-loop-results.tsv 2>/dev/null
-      git diff --cached --quiet || git commit -m "chore: remove tim-loop artifacts from tracking" && git push
-      ```
-      Then re-check `gh pr diff` to confirm they're gone before continuing.
+      If any match: BLOCKING finding (category: "artifact-in-diff", description: "{filename} is in the diff — the publish step should have cleaned this up").
+      Do NOT attempt remedial cleanup — the auditor may be reading the worktree in parallel.
 
       ## Code Review
 
       Review code quality using `gh pr diff`. Use structured findings.
 
-      ## Spec Completeness Audit (mandatory — do this AFTER code review)
+      ## NOTE: Spec completeness is handled by the dedicated auditor agent.
+      ## Your verdict covers CI + code quality ONLY.
 
-      Perform the Spec Completeness Audit from tim-reviewer.md. For EVERY requirement
-      and acceptance criterion listed above, search the integration worktree for
-      implementation evidence (grep for function names, routes, components) and test
-      evidence (grep test directories for test descriptions/assertions).
-
-      Produce a `requirement_audit` array in task metadata with per-requirement evidence:
-        { requirement, priority, status, impl_evidence, test_evidence }
-      Status: "IMPLEMENTED" (both evidence), "IMPL_ONLY" (no test), "MISSING" (neither)
-      ALL P0 must be "IMPLEMENTED" with both evidence fields for a PASS verdict.
-
-      Report verdict, prognosis, CI status, requirement_audit, and findings in task metadata:
+      Report verdict, prognosis, CI status, and findings in task metadata:
         metadata: {
           verdict: "PASS"|"FAIL",
           prognosis: "...",
           blocking_count: N,
           ci_status: "pass"|"fail"|"timeout",
           ci_checks: { total: N, passed: N, failed: N, pending: N },
-          requirement_audit: [...],
           findings: [...]
         }
     owner: reviewer
 
-  Wait for reviewer to complete review task.
-  Read task metadata for: verdict, prognosis, ci_status, ci_checks.
-  reviewer_findings = task.metadata.findings
-  requirement_audit = task.metadata.requirement_audit
+  TaskCreate (auditor task):
+    subject: "Deep spec audit (cycle {outer_cycle})"
+    description: |
+      Perform deep spec completeness audit in the integration worktree.
+      Integration worktree: {INTEGRATION_WORKTREE}
 
-  ## Validate requirement_audit before accepting any verdict
-  if requirement_audit is missing or empty:
-    Tell user: "Reviewer did not produce requirement_audit. Treating as FAIL."
-    verdict = "FAIL"
+      ## Spec Requirements (audit EVERY one)
+
+      {SPEC_REQUIREMENTS}
+
+      ## Acceptance Criteria (audit EVERY one — gate same as P0)
+
+      {SPEC_ACCEPTANCE_CRITERIA}
+
+      ## Architect Contract
+
+      {CONTRACT_CONTENT}
+
+      ## Connections Map
+
+      {CONNECTIONS_MAP}
+
+      ## User Journeys
+
+      {USER_JOURNEYS}
+
+      For each requirement and acceptance criterion:
+      1. Grep to find implementation → Read the source file → classify REAL/STUB/MISSING
+      2. Grep to find tests → Read the test file → classify THOROUGH/SHALLOW/MISSING
+      3. Trace integration wiring from entry point → classify WIRED/ORPHAN
+         (only for features with User Journeys — skip for background jobs, webhooks, etc.)
+      4. Score confidence: HIGH/MEDIUM/LOW
+      5. Verify architect's shared contracts are imported by consuming partitions
+      6. Trace entry-point reachability for new user-facing features
+
+      Produce compliance_report (markdown table) for the PR description.
+
+      Report deep_audit, connection_audit, contract_usage, reachability,
+      compliance_report, findings, and summary in task metadata.
+    owner: auditor
+
+  Wait for BOTH tasks to complete.
+  Read reviewer metadata: reviewer_verdict, reviewer_findings, ci_status, ci_checks
+  Read auditor metadata: auditor_verdict, deep_audit, compliance_report, auditor_findings
+
+  ## Cross-Agent Verification Triangulation
+  ## Compare auditor's deep_audit with verifier's plan_adherence to catch disagreements.
+  if verifier's plan_adherence is available from the Phase 3 verify task:
+    for each requirement in deep_audit:
+      verifier_entry = find matching requirement in plan_adherence
+      if verifier_entry and verifier_entry.status == "IMPLEMENTED" and requirement.impl_status == "STUB":
+        Tell user: "TRIANGULATION ALERT: Verifier's grep found '{requirement.requirement}' but auditor assessed it as STUB after reading the source."
+        auditor_findings.append({
+          severity: "BLOCKING",
+          category: "triangulation-disagreement",
+          description: "Verifier grep found evidence but auditor read the source and classified as STUB: {requirement.impl_assessment}",
+          requirement: requirement.requirement,
+          builder: (route by file path of requirement.impl_file)
+        })
+
+  ## Combine verdicts: both reviewer AND auditor must pass
+  combined_findings = reviewer_findings + auditor_findings
+
+  ## Validate auditor's deep_audit before accepting any verdict
+  if deep_audit is missing or empty:
+    Tell user: "Auditor did not produce deep_audit. Treating as FAIL."
+    final_verdict = "FAIL"
     prognosis = "FIXABLE"
   else:
-    ## Check all P0 requirements have status IMPLEMENTED with both evidence fields
-    p0_gaps = [r for r in requirement_audit if r.priority == "P0" and (r.status != "IMPLEMENTED" or not r.impl_evidence or not r.test_evidence)]
-    if p0_gaps and verdict == "PASS":
-      Tell user: "Reviewer reported PASS but {len(p0_gaps)} P0 requirement(s) lack full evidence. Overriding to FAIL."
-      verdict = "FAIL"
-      prognosis = "FIXABLE"
-      for gap in p0_gaps:
-        reviewer_findings.append({ severity: "BLOCKING", category: "missing-p0-evidence", description: "P0 '{gap.requirement}' status: {gap.status}", builder: null })
+    ## Check P0 requirements AND acceptance criteria (priority "AC") for gaps
+    ## P0/AC must have impl_status=REAL and test_status != MISSING and confidence != LOW
+    critical_gaps = [r for r in deep_audit
+      if (r.priority == "P0" or r.priority == "AC")
+      and (r.impl_status != "REAL" or r.test_status == "MISSING" or r.confidence == "LOW")]
 
-  if verdict == "PASS":
-    Tell user: "Review PASS (CI: {ci_checks.passed}/{ci_checks.total} green, audit: all P0s verified). PR #{pr_number} ready for human review."
+    ## Also check: reachability failures for user-facing features are BLOCKING
+    reachability_failures = [r for r in (auditor_findings or []) if r.category == "unreachable-feature"]
+
+    ## Contract usage gaps are BLOCKING if the consuming partition has P0 requirements
+    contract_failures = [r for r in (auditor_findings or []) if r.category == "contract-unused"]
+
+    all_blocking = critical_gaps + reachability_failures + contract_failures
+
+    if all_blocking:
+      if reviewer_verdict == "PASS":
+        Tell user: "Reviewer passed CI+quality but auditor found {len(all_blocking)} issue(s)."
+      final_verdict = "FAIL"
+      prognosis = "FIXABLE"
+      for gap in critical_gaps:
+        combined_findings.append({
+          severity: "BLOCKING",
+          category: "auditor-p0-gap",
+          description: "P0/AC '{gap.requirement}': impl={gap.impl_status}, test={gap.test_status}, confidence={gap.confidence}",
+          builder: (route by file path: stub-impl/shallow-test → file owner,
+                    contract-unused → partition's builder from architect contract,
+                    unreachable-feature → UI partition builder,
+                    triangulation-disagreement → file owner of impl_file,
+                    default → builder-1)
+        })
+    elif reviewer_verdict == "FAIL":
+      final_verdict = "FAIL"
+      prognosis = reviewer's prognosis
+    else:
+      final_verdict = "PASS"
+
+  ## Write compliance report to PR using idempotent section markers
+  if compliance_report:
+    ## Use section markers to support idempotent updates across cycles
+    ## Read current PR body, replace between markers (or append if markers don't exist)
+    current_body = $(gh pr view {pr_number} --json body -q .body)
+    if current_body contains "<!-- SPEC-COMPLIANCE-START -->":
+      ## Replace existing compliance section
+      new_body = current_body with text between <!-- SPEC-COMPLIANCE-START --> and <!-- SPEC-COMPLIANCE-END --> replaced with compliance_report
+    else:
+      ## Append with markers
+      new_body = current_body + "\n\n<!-- SPEC-COMPLIANCE-START -->\n" + compliance_report + "\n<!-- SPEC-COMPLIANCE-END -->"
+    ## Wrap in error handling — failure to post report should not affect verdict
+    try: gh pr edit {pr_number} --body "$new_body"
+    catch: Tell user: "Warning: Failed to update PR with compliance report. Verdict unaffected."
+
+  if final_verdict == "PASS":
+    Tell user: "Review PASS (CI: {ci_checks.passed}/{ci_checks.total} green, audit: {deep_audit.summary.high_confidence} HIGH / {deep_audit.summary.medium_confidence} MEDIUM confidence). PR #{pr_number} ready for human review."
     ## Log final state to TSV
     append_tsv_row(outer_cycle, "review", 0, feature_metric, "pass", "PASS", "review approved")
     Tell user final metrics summary if metric_mode == "metric":
@@ -568,21 +656,26 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     SHUTDOWN_TEAM()
     DONE.
 
-  elif verdict == "FAIL":
+  elif final_verdict == "FAIL":
     if prognosis == "NEEDS_HUMAN":
-      ABORT("Reviewer reports issue needing human intervention.")
+      ABORT("Review reports issue needing human intervention.")
 
     ## Report CI status to user when CI contributed to the failure
     ci_failures = [f for f in reviewer_findings if f.category == "ci-failure" or f.category == "ci-timeout"]
     if ci_failures:
       Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: CI failing ({ci_checks.failed} check(s)). Routing to builders..."
 
-    ## Route reviewer findings to relevant builders by file ownership.
-    ## CI failures with builder == null are routed to builder-1 (default owner for unroutable items).
+    ## Route combined findings to relevant builders.
+    ## Routing rules for new finding types:
+    ##   stub-impl / shallow-test → route by impl_file path to owning builder
+    ##   contract-unused → route to the builder whose partition should consume the contract
+    ##   unreachable-feature → route to the builder who owns the page/route registration
+    ##   triangulation-disagreement → route to the builder who owns the file flagged as STUB
+    ##   ci-failure with builder == null → route to builder-1 (default)
 
     if outer_cycle < MAX_OUTER_CYCLES:
       Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Review FAIL. Refreshing agents for cycle {outer_cycle + 1}..."
-      REFRESH_AGENTS(cycle_number = outer_cycle + 1, with reviewer findings routed to builders)
+      REFRESH_AGENTS(cycle_number = outer_cycle + 1, with combined findings routed to builders)
 
     outer_cycle += 1
 
@@ -651,7 +744,9 @@ When aborting for any reason:
            "rethink_attempted": true
          }
        ],
-       "abort_reason": "Builder builder-2 stagnant after rethink."
+       "abort_reason": "Builder builder-2 stagnant after rethink.",
+       "last_deep_audit": [],
+       "last_auditor_findings": []
      }
      ```
    - Tell user the branch names and resume file location

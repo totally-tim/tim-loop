@@ -15,14 +15,15 @@ You write a spec  -->  Worktree created  -->  Architect partitions work  -->  N 
 4. **VERIFY** — Independent verifier runs checks against combined output, compares against baseline
 5. **FIX** — If verify fails, failures are routed to the owning builder by file path. Per-builder stagnation detection
 6. **PUBLISH** — Code committed, pushed, PR created/updated with priority checklist from all partitions
-7. **REVIEW** — Reviewer checks PR diff against spec with priority-aware coverage tracking
+7. **REVIEW** — Reviewer checks CI + code quality while Auditor performs deep spec completeness review (in parallel)
 8. If review fails, all agents are shut down and fresh agents are spawned with the reviewer's findings for the next cycle
 
-**Four agent roles:**
+**Five agent roles:**
 - **Architect** — explores codebase, creates implementation contract with shared types and partitions, shuts down after planning
 - **Builder(s)** — N parallel builders, each scoped to their own files, implementing with TDD
 - **Verifier** — runs all checks independently, can't edit code, reports structured failure_keys
-- **Reviewer** — reviews PR diff via `gh` CLI, can request screenshots from verifier
+- **Reviewer** — checks CI status and code quality via `gh` CLI
+- **Auditor** — deep spec completeness review by reading actual source files, classifying implementations as REAL/STUB/MISSING and tests as THOROUGH/SHALLOW/MISSING, with per-requirement confidence scoring
 
 The orchestrator coordinates via a shared task list (`Ctrl+T` to see progress) — it never reads code or runs tests.
 
@@ -79,6 +80,7 @@ Start a new Claude Code session — `/tim-spec` and `/tim-loop` will appear in a
 │   ├── tim-builder.md     # Builder agent prompt + reference
 │   ├── tim-verifier.md    # Verifier agent prompt + reference
 │   ├── tim-reviewer.md    # Reviewer agent prompt + reference
+│   ├── tim-auditor.md     # Auditor agent prompt + reference
 │   ├── tim-verify.md      # 3-tier verification strategy
 │   └── README.md          # This file
 ├── tim-spec/
