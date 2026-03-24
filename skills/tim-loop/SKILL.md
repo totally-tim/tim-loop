@@ -134,8 +134,9 @@ For each agent, fill in the placeholders from their prompt template with:
 - `{BUILDER_WORKTREES}` — "None" on initial spawn; filled after builder worktrees are created
 - `{USER_JOURNEYS}` — from spec's `## User Journeys` section, or "None"
 - `{CONNECTIONS_MAP}` — from architect contract's `## Connections` section (filled after architect phase), or "None"
-- `{SPEC_REQUIREMENTS}` — the `## Requirements` section content from the spec (for embedding in review task)
-- `{SPEC_ACCEPTANCE_CRITERIA}` — the `## Acceptance Criteria` section content from the spec (for embedding in review task)
+- `{CONTRACT_CONTENT}` — full text of `.tim-loop-contract.md` (filled after architect phase), for auditor
+- `{SPEC_REQUIREMENTS}` — the `## Requirements` section content from the spec (for embedding in auditor task)
+- `{SPEC_ACCEPTANCE_CRITERIA}` — the `## Acceptance Criteria` section content from the spec (for embedding in auditor task)
 - Other placeholders filled as the loop progresses
 
 The architect will study the codebase and produce the implementation contract.

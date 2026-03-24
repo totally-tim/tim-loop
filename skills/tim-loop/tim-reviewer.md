@@ -265,23 +265,24 @@ Detailed findings:
 
 **BLOCKING (must fix before merge):**
 - Failing CI checks (CI must be green for PASS verdict)
-- Missing P0 spec requirement
 - Security vulnerability
 - Broken existing functionality (guard regression)
 - Wrong architectural layer
-- Missing tests for P0 functionality
+- Tim-loop artifacts in the diff (publish step should have cleaned these up)
 
 **NON-BLOCKING (should fix, won't block):**
-- Missing P1 requirement (flag but don't block)
 - Naming inconsistencies
 - Minor code style issues
 - Suboptimal but functional approach
 - Missing edge case test (non-critical path)
 
 **OBSERVATIONS (informational):**
-- Missing P2 requirements (document for follow-up)
 - Future improvement opportunities
 - Patterns worth adopting elsewhere
+
+**NOTE:** Spec requirement coverage (missing P0/P1/P2 requirements, missing tests for
+functionality) is handled by the dedicated auditor agent. Do NOT produce spec-related
+findings — they would pollute the combined verdict logic.
 - Performance optimization hints
 
 ### When to Escalate
