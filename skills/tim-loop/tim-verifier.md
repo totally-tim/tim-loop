@@ -44,6 +44,8 @@ Agent tool (general-purpose):
     6. Use Context7 (resolve-library-id + query-docs) to validate dependency usage
     7. Report structured task metadata on every verify task completion
     8. On baseline verification, report discovered test infrastructure in task metadata
+    9. Read tim-evaluation-calibration.md on your first turn for scoring criteria and calibration
+    10. Score every quality dimension 1-10 during integration verification. No dimension below 6 is acceptable — FAIL even if tests pass.
 
     ## Spec Overrides
 
@@ -53,8 +55,9 @@ Agent tool (general-purpose):
 
     1. Read ~/.claude/skills/tim-loop/tim-verifier.md for detailed process guidance
     2. Read ~/.claude/skills/tim-loop/tim-verify.md for the verification strategy
-    3. If Prior Discovery is provided, use those commands directly. Otherwise, identify available test runners and frameworks in this project.
-    4. Wait for your first task assignment
+    3. Read ~/.claude/skills/tim-loop/tim-evaluation-calibration.md for scoring criteria, thresholds, and calibration examples
+    4. If Prior Discovery is provided, use those commands directly. Otherwise, identify available test runners and frameworks in this project.
+    5. Wait for your first task assignment
 ```
 
 ---
@@ -222,7 +225,8 @@ Use this to validate the builder used correct, current APIs.
 ### Communication Protocol
 
 **Task-based verdicts** (primary coordination mechanism):
-Mark verify tasks complete with structured metadata:
+Mark verify tasks complete with structured metadata. Include `quality_scores` and
+`score_rationale` from the evaluation calibration criteria (see `tim-evaluation-calibration.md`).
 
 ```
 TaskUpdate:
@@ -233,6 +237,16 @@ TaskUpdate:
     guard_status: "pass",
     feature_metric: 85.1,
     metric_delta: +12.8,
+    quality_scores: {
+      functional_completeness: 9,
+      code_health: 8,
+      integration_coherence: 9
+    },
+    score_rationale: {
+      functional_completeness: "8/8 P0 requirements verified working end-to-end",
+      code_health: "typecheck clean, lint clean, 47/47 tests pass, no new warnings",
+      integration_coherence: "all connections wired, 0 stubs, 0 dead exports, interactive smoke passed"
+    },
     plan_adherence: [
       { requirement: "[P0] Rate limiting", priority: "P0", status: "IMPLEMENTED", impl_evidence: "src/middleware/rateLimit.ts:15", test_evidence: "tests/middleware/rateLimit.test.ts:8" },
       { requirement: "[P1] Error toast", priority: "P1", status: "IMPLEMENTED", impl_evidence: "src/components/ErrorToast.tsx:22", test_evidence: "tests/components/ErrorToast.test.tsx:10" }
@@ -251,7 +265,7 @@ TaskUpdate:
   }
 ```
 
-or on FAIL (Phase 3 failures):
+or on FAIL (Phase 3 failures or score below threshold):
 
 ```
 TaskUpdate:
@@ -262,6 +276,16 @@ TaskUpdate:
     guard_status: "pass",
     feature_metric: 85.1,
     metric_delta: +12.8,
+    quality_scores: {
+      functional_completeness: 7,
+      code_health: 5,
+      integration_coherence: 4
+    },
+    score_rationale: {
+      functional_completeness: "6/8 P0 requirements verified, 2 MISSING",
+      code_health: "typecheck clean, 3 lint warnings, 2 test failures",
+      integration_coherence: "1 stub found, 1 dead export, interactive smoke: 2 pages failed to render"
+    },
     plan_adherence: [
       { requirement: "[P0] Rate limiting", priority: "P0", status: "IMPLEMENTED", impl_evidence: "src/middleware/rateLimit.ts:15", test_evidence: "tests/middleware/rateLimit.test.ts:8" },
       { requirement: "[P0] JWT validation", priority: "P0", status: "MISSING", impl_evidence: null, test_evidence: null }
@@ -319,8 +343,60 @@ FIXABLE | NEEDS_HUMAN | UNCLEAR
 Reasoning: why you believe this is/isn't fixable by the builder
 ```
 
+### Contract Review (cycle 1 only)
+
+The orchestrator may assign you a "review-contract" task with a builder's proposed
+done-criteria. Your job is to ensure the builder's contract is testable:
+
+**Review checklist:**
+- Are success conditions measurable (not vague)?
+- Are edge cases mentioned?
+- Are the behaviors specific enough to verify (not "it should work")?
+- Does the contract cover all requirements assigned to this partition?
+
+**Push back if:**
+- Testable criteria are vague ("the feature works") — ask for specific behaviors
+- Edge cases are not mentioned — suggest the obvious ones
+- Success conditions are unmeasurable ("good performance") — ask for thresholds
+
+**Max 2 review rounds.** After 2 rejections, approve with notes listing your concerns.
+The builder proceeds with their latest proposal regardless.
+
+Report via TaskUpdate:
+```json
+{
+  "approved": true,
+  "feedback": "Contract is testable. Note: consider adding error state for network timeout."
+}
+```
+
+### Quality Score Gating
+
+After computing quality_scores during integration verification, check each dimension
+against the hard threshold of 6 (see `tim-evaluation-calibration.md`).
+
+If any dimension scores below 6, the build **FAILS** — even if all tests pass.
+Include in the failure feedback to builders:
+- Which dimension(s) failed
+- The score and rationale
+- What specifically needs improvement
+
+Example: "Tests pass but implementation quality below bar. integration_coherence: 4/10 —
+1 stub found in src/api/invoices.ts, 1 dead export InvoiceForm, interactive smoke check
+showed 2 pages failing to render."
+
+### Anti-Leniency
+
+Read the Anti-Leniency Directives in `tim-evaluation-calibration.md` and follow them
+strictly. Key principles:
+
+- If you identify an issue, it IS significant. Do not rationalize it away.
+- When in doubt, FAIL. False negatives are 10x more expensive than false positives.
+- A passing test suite does not mean the implementation is good. Score based on what
+  you observe, not what the test runner reports.
+
 ### Prognosis Guidelines
 
-- **FIXABLE:** Test assertion errors, missing imports, off-by-one bugs, minor guard failures from typos/imports, missing edge case tests, minor plan deviations
-- **NEEDS_HUMAN:** Architectural conflicts with spec, missing external dependencies, spec ambiguity needing clarification, fundamental design mismatches, guard failures indicating deep structural issues
+- **FIXABLE:** Test assertion errors, missing imports, off-by-one bugs, minor guard failures from typos/imports, missing edge case tests, minor plan deviations, quality scores slightly below threshold (4-5)
+- **NEEDS_HUMAN:** Architectural conflicts with spec, missing external dependencies, spec ambiguity needing clarification, fundamental design mismatches, guard failures indicating deep structural issues, quality scores severely below threshold (1-3)
 - **UNCLEAR:** First or second occurrence of a confusing failure. Same issue on attempt 3+ → escalate to NEEDS_HUMAN.

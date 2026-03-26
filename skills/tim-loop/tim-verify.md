@@ -165,6 +165,49 @@ verification and note it in the verify report.
 tool (e.g., "use /browse for all web browsing"), respect that directive regardless of
 the priority order above.
 
+### Interactive Smoke Check (between Tier 2 and Tier 3)
+
+After Tier 1 passes and Tier 2 completes, run a quick interactive smoke check on web
+projects. This feeds into the `integration_coherence` quality score.
+
+**Purpose:** Catch "green tests, broken app" problems earlier. This is NOT the full
+user journey test (that's Phase 3d) — it's a fast preview that gives the builder
+actionable feedback sooner.
+
+**Process:**
+
+1. **Detect dev server command:** Check verifier discovery, CLAUDE.md, or package.json
+   scripts for `dev`, `start`, or `serve` commands.
+2. **Start dev server** if not already running. Wait for it to be ready (check port).
+3. **Navigate key routes** from the spec's `## Requirements`:
+   - Home/landing page
+   - Each page/route mentioned in requirements
+   - Key feature entry points
+4. **Screenshot critical states:**
+   - Landing page
+   - Feature-specific pages
+   - Error states (if accessible)
+5. **Check for problems:**
+   - Pages render (not blank, not 500 error)
+   - Navigation works (links/buttons lead to correct pages)
+   - No console errors (check browser console output)
+   - Key UI elements present (buttons, forms, data displays)
+6. **Feed results into quality scores:**
+   - All pages render + navigation works + no errors → high integration_coherence
+   - Some pages fail → lower integration_coherence
+   - Dev server won't start → log warning, score from static analysis only
+7. **Save screenshots** as evidence with descriptive names (e.g., `smoke-{page-name}.png`)
+
+**Tool selection:** Same priority as Tier 2 interactive verification:
+1. `/browse` (gstack) — preferred
+2. `playwright-cli` — fallback
+3. Project CLAUDE.md overrides take precedence
+
+**Skip conditions:**
+- No web UI in the feature (API-only, library, CLI) → skip entirely
+- Dev server command not found → log warning, skip
+- Dev server fails to start → log warning, score from static analysis
+
 ### Tier 3 — Spec Override
 
 If the spec file contains a `## Verification` section, parse it for:
@@ -387,6 +430,32 @@ Phase 3 can be partially skipped when not applicable:
 | Integration | `integration/dead-export/` | dead export | `integration/dead-export/src/components/Form.tsx:Form` |
 | Integration | `integration/connection/` | connection | `integration/connection/POST /api/invoices→Form:not-called` |
 | Integration | `integration/journey/` | journey | `integration/journey/create-invoice:2:form-not-rendered` |
+
+## Quality Scoring
+
+After completing all phases, compute quality scores per the dimensions in
+`tim-evaluation-calibration.md`. These scores are computed from verification results:
+
+### Deriving Verifier Scores
+
+| Dimension | Input | Scoring Method |
+|---|---|---|
+| **Functional completeness** | Plan adherence results | (P0 IMPLEMENTED count / total P0 count) * 10. If any P0 is MISSING, cap at 5. |
+| **Code health** | Tier 1 results | Start at 10. Subtract 1 per typecheck error, 0.5 per lint warning, 1 per failing test. Floor at 1. |
+| **Integration coherence** | Phase 3 results + smoke check | Start at 10. Subtract 2 per stub, 2 per dead export, 1 per missing connection. Add 1 if interactive smoke check passed. Floor at 1. |
+
+### Hard Threshold
+
+No dimension below 6. If any dimension < 6, set verdict = FAIL regardless of
+whether tests pass. Include the failing dimensions and rationale in the failure
+feedback to builders.
+
+Score 6 exactly = PASS (threshold is "below 6", not "at or below 6").
+
+### Reporting Scores
+
+Include `quality_scores` and `score_rationale` in task metadata alongside
+existing fields (verdict, guard_status, feature_metric, etc.).
 
 ## Baseline Comparison
 
