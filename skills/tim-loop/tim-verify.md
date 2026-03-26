@@ -203,10 +203,16 @@ actionable feedback sooner.
 2. `playwright-cli` — fallback
 3. Project CLAUDE.md overrides take precedence
 
+**Timeout:** If the dev server hasn't become ready within 30 seconds, treat as "fails to start"
+and fall back to static analysis scoring. Do not block indefinitely.
+
+**Cleanup:** If you started the dev server for this smoke check, stop it when done.
+The Phase 3d journey tests may start their own server — don't leave orphaned processes.
+
 **Skip conditions:**
 - No web UI in the feature (API-only, library, CLI) → skip entirely
 - Dev server command not found → log warning, skip
-- Dev server fails to start → log warning, score from static analysis
+- Dev server fails to start or times out → log warning, score from static analysis
 
 ### Tier 3 — Spec Override
 

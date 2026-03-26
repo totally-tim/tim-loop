@@ -632,12 +632,18 @@ while outer_cycle <= MAX_OUTER_CYCLES:
           builder: (route by file path of requirement.impl_file)
         })
 
+  ## Combine verdicts: both reviewer AND auditor must pass, AND all scores must be ≥ 6
+  combined_findings = reviewer_findings + auditor_findings
+
   ## Quality Score Gate — check verifier and auditor scores against thresholds
   ## Read verifier quality_scores from the VERIFY phase metadata
   verifier_scores = verify_task_metadata.quality_scores  (from Phase 3 task)
   auditor_scores = auditor_metadata.quality_scores
+  verifier_rationale = verify_task_metadata.score_rationale  (from Phase 3 task)
+  auditor_rationale = auditor_metadata.score_rationale
 
   all_scores = {**(verifier_scores or {}), **(auditor_scores or {})}
+  all_rationale = {**(verifier_rationale or {}), **(auditor_rationale or {})}
   score_failures = [dim for dim, score in all_scores.items() if score < 6]
 
   if score_failures:
@@ -646,14 +652,11 @@ while outer_cycle <= MAX_OUTER_CYCLES:
       combined_findings.append({
         severity: "BLOCKING",
         category: "quality-score-below-threshold",
-        description: "{dim}: {all_scores[dim]}/10 — below minimum threshold of 6. Rationale: {score_rationale[dim]}",
+        description: "{dim}: {all_scores[dim]}/10 — below minimum threshold of 6. Rationale: {all_rationale[dim]}",
         builder: (route by dimension: implementation_depth/test_thoroughness → auditor's impl_file owners,
                   functional_completeness/integration_coherence → verifier's failure_key owners,
                   code_health/spec_fidelity → builder-1 default)
       })
-
-  ## Combine verdicts: both reviewer AND auditor must pass, AND all scores must be ≥ 6
-  combined_findings = reviewer_findings + auditor_findings
 
   ## Validate auditor's deep_audit before accepting any verdict
   if deep_audit is missing or empty:
@@ -901,7 +904,7 @@ REFRESH_AGENTS(cycle_number, reviewer_findings_by_builder, pr_number, baseline, 
     Use the builder spawn template with:
       - {CYCLE_NUMBER} = cycle_number
       - {MAX_OUTER_CYCLES} = MAX_OUTER_CYCLES
-      - {MAX_BUILDER_ITERATIONS} = MAX_BUILDER_ITERATIONS
+      - {ITERATION_BUDGET} = partition.iteration_budget or MAX_BUILDER_ITERATIONS
       - {PREVIOUS_FINDINGS_OR_EMPTY} = reviewer_findings_by_builder[partition.builder_name]
       - {CONTRACT_CONTENT} = contract_content
       - {BUILDER_WORKTREE} = partition.builder_worktree (same worktree, fresh agent)
@@ -916,14 +919,16 @@ This provides visibility into the loop's progress and enables pattern recognitio
 
 Format:
 ```
-cycle	builder	iteration	metric	guard	status	description
-0	-	0	72.3	pass	baseline	initial state
-1	builder-1	1	75.0	pass	keep	implemented auth endpoints
-1	builder-1	2	75.0	fail	revert	broke existing tests
-1	builder-1	3	78.2	pass	keep	auth endpoints with fixed imports
-1	builder-2	1	72.3	pass	keep	added UI components
-1	builder-2	2	72.3	pass	discard	metric unchanged after refactor
-1	integration	0	80.5	pass	PASS	integrated verify
+cycle	phase	builder	iteration	metric	guard	status	duration_s	description
+0	BASELINE	-	0	72.3	pass	baseline	5	initial state
+1	CONTRACT	-	0	null	pass	complete	45	contract negotiation
+1	BUILD	builder-1	1	75.0	pass	keep	30	implemented auth endpoints
+1	BUILD	builder-1	2	75.0	fail	revert	25	broke existing tests
+1	BUILD	builder-1	3	78.2	pass	keep	35	auth endpoints with fixed imports
+1	BUILD	builder-2	1	72.3	pass	keep	28	added UI components
+1	BUILD	builder-2	2	72.3	pass	discard	22	metric unchanged after refactor
+1	VERIFY	integration	0	80.5	pass	PASS	60	integrated verify
+1	REVIEW	review	0	80.5	pass	PASS	120	review approved
 ```
 
 The `metric` column contains the feature metric value (from `## Verify Command`) when
