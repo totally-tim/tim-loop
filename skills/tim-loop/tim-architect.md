@@ -193,6 +193,14 @@ are fully independent), this section can be empty but must still be present:
 **Implementation Notes:**
 Brief guidance on approach, relevant existing code to reference, edge cases.
 
+**iteration_budget:** {N}
+Recommended iterations for this partition based on complexity. The orchestrator uses
+this to set per-builder iteration limits. Must not exceed `max_builder_iterations`
+from spec config. Guidelines:
+- Simple (1-2 requirements, few files): 4-6 iterations
+- Medium (3-4 requirements): 6-8 iterations
+- Complex (5+ requirements, many files): 8-12 iterations
+
 ### Partition 2: {descriptive-name}
 {Same structure as Partition 1}
 

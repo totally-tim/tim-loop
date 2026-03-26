@@ -109,6 +109,7 @@ Read these files from the skill directory (`~/.claude/skills/tim-loop/`):
 - `tim-reviewer.md` — reviewer agent prompt template
 - `tim-auditor.md` — auditor agent prompt template
 - `tim-verify.md` — verification strategy reference
+- `tim-evaluation-calibration.md` — scoring criteria, thresholds, and calibration examples
 
 ### Step 5: Spawn Initial Agents
 
@@ -177,10 +178,14 @@ Wait for all 3 agents to report ready before proceeding to the Architect Phase.
    If acceptable: approve (approve: true).
 
 4. Read the approved contract. Extract:
-   - `partitions` — array of { name, files, requirements, dependencies }
+   - `partitions` — array of { name, files, requirements, dependencies, iteration_budget }
    - `contract_content` — full text of .tim-loop-contract.md
    - `partition_count` — number of partitions
    - `connections_map` — the `## Connections` section content (for verifier Phase 3c)
+
+   For each partition, parse `iteration_budget` if present:
+   - `partition.iteration_budget = min(parsed_value, MAX_BUILDER_ITERATIONS)`
+   - If not specified: `partition.iteration_budget = MAX_BUILDER_ITERATIONS`
 
 5. **Create per-builder worktrees:** For each partition, create a worktree branching from the integration branch:
 
@@ -246,8 +251,8 @@ Initialize the TSV progress log:
 
 ```
 ## Write header + baseline row to tim-loop-results.tsv in integration worktree
-cycle\tbuilder\titeration\tmetric\tguard\tstatus\tdescription
-0\t-\t0\t{baseline_metric}\tpass\tbaseline\tinitial state
+cycle\tphase\tbuilder\titeration\tmetric\tguard\tstatus\tduration_s\tdescription
+0\tBASELINE\t-\t0\t{baseline_metric}\tpass\tbaseline\t{duration}\tinitial state
 ```
 
 ## THE LOOP
@@ -258,6 +263,47 @@ pr_number = null
 baseline, baseline_metric, verifier_discovery = (from Step 6, or empty/null if skipped)
 
 while outer_cycle <= MAX_OUTER_CYCLES:
+
+  ## 0.5. CONTRACT NEGOTIATION (cycle 1 only)
+  if outer_cycle == 1:
+    Tell user: "Cycle 1: Negotiating done-contracts with builders..."
+    ## For each active partition, ask the builder to propose what "done" looks like.
+    ## The verifier reviews each proposal. Max 2 rounds per partition.
+
+    for each active partition (parallel):
+      TaskCreate:
+        subject: "Propose done contract for {partition.name}"
+        description: |
+          Write a brief done-contract for your partition. Include:
+          1. What you'll build (specific files, functions, endpoints)
+          2. What should be tested (specific behaviors, edge cases)
+          3. What constitutes pass (concrete, measurable criteria)
+          Submit via TaskUpdate with metadata: { contract: "..." }
+        owner: {partition.builder_name}
+
+    Wait for all proposals. For each:
+      TaskCreate:
+        subject: "Review builder-{N} contract for {partition.name}"
+        description: |
+          Review this builder's proposed done-criteria. Push back if:
+          - Testable criteria are vague ("it should work")
+          - Edge cases not mentioned
+          - Success conditions unmeasurable
+          Report: metadata: { approved: true/false, feedback: "..." }
+
+          Builder's proposal:
+          {builder_contract_from_metadata}
+        owner: verifier
+
+    Wait for all reviews.
+    for each rejected contract (round < 2):
+      Route feedback to builder, request revised proposal.
+      Wait for revision, re-route to verifier.
+    for any still rejected after 2 rounds:
+      Log warning: "Contract not fully approved, proceeding with builder's latest proposal."
+
+    ## Log contract negotiation to TSV
+    append_tsv_row(outer_cycle, "CONTRACT", "-", 0, null, "pass", "complete", duration_s, "contract negotiation")
 
   ## 1. BUILD (with keep/discard iteration per builder)
   Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Starting build ({partition_count} builder(s))..."
@@ -284,7 +330,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
          - Metric same/worse? DISCARD (`git revert HEAD`), try different approach
       6. If guard PASSES and metric_mode == "pass_fail": KEEP (commit stays)
 
-      Max iterations: {MAX_BUILDER_ITERATIONS}
+      Max iterations: {partition.iteration_budget or MAX_BUILDER_ITERATIONS}
       Report each iteration outcome in task metadata as it happens:
         metadata.iterations: [{metric: N, guard: "pass"|"fail", status: "keep"|"discard"|"revert", description: "..."}]
 
@@ -300,15 +346,15 @@ while outer_cycle <= MAX_OUTER_CYCLES:
   ## Post-build: read iteration results from each builder's task metadata.
   ## Log all iterations to TSV. Track consecutive discard streaks per builder.
 
-  ## Stuck detection: if any builder hit 5+ consecutive discards:
-  if builder hit 5+ consecutive discards AND rethink not yet attempted:
+  ## Stuck detection: if any builder hit 3+ consecutive discards:
+  if builder hit 3+ consecutive discards AND rethink not yet attempted:
     Tell user: "Attempting radical rethink for {builder}..."
     TaskCreate:
       subject: "Radical rethink: {partition.name} (cycle {outer_cycle})"
       description: |
-        You hit 5 consecutive discards. Re-read the spec and your git log,
-        then try a fundamentally different approach. Max 3 more iterations.
-        Report outcome in task metadata.
+        You hit 3 consecutive discards. Re-read the spec and your git log,
+        then try a fundamentally different approach. Use remaining iteration
+        budget for the rethink. Report outcome in task metadata.
       owner: {partition.builder_name}
 
     Wait for rethink task.
@@ -319,7 +365,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
       if not all_partitions_independent(partitions):
         ABORT("Builder stagnant on dependent partition after rethink.")
 
-  elif builder hit 5+ consecutive discards AND rethink already attempted:
+  elif builder hit 3+ consecutive discards AND rethink already attempted:
     partition.status = "needs_human"
     if not all_partitions_independent(partitions):
       ABORT("Builder stagnant on dependent partition.")
@@ -413,8 +459,8 @@ while outer_cycle <= MAX_OUTER_CYCLES:
   Wait for verifier to complete the verify task.
   Read task metadata for: verdict, failure_keys, prognosis, feature_metric, plan_adherence.
 
-  ## Log integration verification to TSV
-  append_tsv_row(outer_cycle, "integration", 0, feature_metric, guard_status, verdict, "integrated verify")
+  ## Log integration verification to TSV (include phase and duration)
+  append_tsv_row(outer_cycle, "VERIFY", "integration", 0, feature_metric, guard_status, verdict, duration_s, "integrated verify")
 
   if verdict == "PASS":
     Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Integration verify PASS."
@@ -586,7 +632,27 @@ while outer_cycle <= MAX_OUTER_CYCLES:
           builder: (route by file path of requirement.impl_file)
         })
 
-  ## Combine verdicts: both reviewer AND auditor must pass
+  ## Quality Score Gate — check verifier and auditor scores against thresholds
+  ## Read verifier quality_scores from the VERIFY phase metadata
+  verifier_scores = verify_task_metadata.quality_scores  (from Phase 3 task)
+  auditor_scores = auditor_metadata.quality_scores
+
+  all_scores = {**(verifier_scores or {}), **(auditor_scores or {})}
+  score_failures = [dim for dim, score in all_scores.items() if score < 6]
+
+  if score_failures:
+    Tell user: "Quality score(s) below threshold: {score_failures}"
+    for dim in score_failures:
+      combined_findings.append({
+        severity: "BLOCKING",
+        category: "quality-score-below-threshold",
+        description: "{dim}: {all_scores[dim]}/10 — below minimum threshold of 6. Rationale: {score_rationale[dim]}",
+        builder: (route by dimension: implementation_depth/test_thoroughness → auditor's impl_file owners,
+                  functional_completeness/integration_coherence → verifier's failure_key owners,
+                  code_health/spec_fidelity → builder-1 default)
+      })
+
+  ## Combine verdicts: both reviewer AND auditor must pass, AND all scores must be ≥ 6
   combined_findings = reviewer_findings + auditor_findings
 
   ## Validate auditor's deep_audit before accepting any verdict
@@ -628,6 +694,10 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     elif reviewer_verdict == "FAIL":
       final_verdict = "FAIL"
       prognosis = reviewer's prognosis
+    elif score_failures:
+      final_verdict = "FAIL"
+      prognosis = "FIXABLE"
+      Tell user: "All tests pass and audit clean, but quality scores below threshold: {score_failures}"
     else:
       final_verdict = "PASS"
 
@@ -647,9 +717,9 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     catch: Tell user: "Warning: Failed to update PR with compliance report. Verdict unaffected."
 
   if final_verdict == "PASS":
-    Tell user: "Review PASS (CI: {ci_checks.passed}/{ci_checks.total} green, audit: {deep_audit.summary.high_confidence} HIGH / {deep_audit.summary.medium_confidence} MEDIUM confidence). PR #{pr_number} ready for human review."
+    Tell user: "Review PASS (CI: {ci_checks.passed}/{ci_checks.total} green, audit: {deep_audit.summary.high_confidence} HIGH / {deep_audit.summary.medium_confidence} MEDIUM confidence, scores: {all_scores}). PR #{pr_number} ready for human review."
     ## Log final state to TSV
-    append_tsv_row(outer_cycle, "review", 0, feature_metric, "pass", "PASS", "review approved")
+    append_tsv_row(outer_cycle, "REVIEW", "review", 0, feature_metric, "pass", "PASS", duration_s, "review approved")
     Tell user final metrics summary if metric_mode == "metric":
       "Metric: {baseline_metric} → {feature_metric} ({metric_delta})"
     Invoke superpowers:finishing-a-development-branch

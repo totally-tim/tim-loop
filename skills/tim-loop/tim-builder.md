@@ -45,7 +45,7 @@ Agent tool (general-purpose):
     ## Cycle Context
 
     Cycle: {CYCLE_NUMBER} of {MAX_OUTER_CYCLES}
-    Max iterations: {MAX_BUILDER_ITERATIONS}
+    Max iterations: {ITERATION_BUDGET}
     {PREVIOUS_FINDINGS_OR_EMPTY}
 
     ## Iron Laws
@@ -102,7 +102,7 @@ Agent tool (general-purpose):
     ## Cycle Context
 
     Cycle: {CYCLE_NUMBER} of {MAX_OUTER_CYCLES}
-    Max iterations: {MAX_BUILDER_ITERATIONS}
+    Max iterations: {ITERATION_BUDGET}
     {PREVIOUS_FINDINGS_OR_EMPTY}
 
     ## Iron Laws
@@ -303,10 +303,57 @@ Each iteration should still follow TDD — but within the atomic keep/discard fr
 The TDD cycle is INSIDE the keep/discard cycle. A single "iteration" may contain
 a test + its implementation — that's one atomic change.
 
-### Radical Rethink (when assigned)
+### Contract Proposal (cycle 1 only)
 
-If you receive a "Radical rethink" task, you've hit 5 consecutive discards.
-The orchestrator is giving you one last chance before marking you NEEDS_HUMAN.
+On cycle 1, before building, the orchestrator may assign you a "propose-contract" task.
+This is your chance to define what "done" looks like for your partition — so the verifier
+knows exactly what to test.
+
+**Write a brief done-contract including:**
+1. **What you'll build:** specific files, functions, endpoints, components
+2. **What should be tested:** specific behaviors, edge cases, error states
+3. **What constitutes pass:** concrete, measurable criteria (not "it should work")
+
+**Submit via TaskUpdate:**
+```json
+{
+  "contract": "## Builder-{N} Done Contract\n\n### Will Build\n- POST /api/invoices endpoint (src/api/invoices.ts)\n- Invoice validation logic (src/services/invoice-validator.ts)\n\n### Should Be Tested\n- Valid invoice creation returns 201 with invoice object\n- Missing required fields returns 400 with specific error messages\n- Duplicate invoice number returns 409\n\n### Pass Criteria\n- All 3 P0 requirements have REAL implementations (not stubs)\n- Tests cover happy path + 2 error cases per endpoint\n- TypeScript compiles without errors"
+}
+```
+
+The verifier reviews your contract and may push back if criteria are vague. Max 2 review
+rounds — then you proceed regardless. On cycles 2+, skip this step — previous failure
+feedback IS your contract.
+
+### Refine vs Pivot Decision
+
+After every 3 iterations, make an explicit strategic decision:
+
+**REFINE** if:
+- At least 1 of the last 3 iterations was a keep
+- Metric/guard trends are improving (even if slowly)
+- You're making incremental progress on the current approach
+
+**PIVOT** if:
+- All 3 of the last 3 iterations were discards
+- The same guard/test keeps failing despite different attempts
+- You're stuck in a pattern (similar changes, similar failures)
+
+**Log the decision** in your iteration metadata:
+```json
+{
+  "iteration": 4,
+  "decision": "PIVOT",
+  "reasoning": "3 consecutive discards, all failing on typecheck — trying a different type approach"
+}
+```
+
+When PIVOTING, try the OPPOSITE approach (see Radical Rethink below).
+
+### Radical Rethink (when assigned or self-triggered)
+
+If you hit 3 consecutive discards, the orchestrator triggers a radical rethink.
+You may also self-trigger if your refine/pivot decision is PIVOT.
 
 **Approach:**
 1. **Re-read everything from scratch:** spec, contract, your git log
@@ -317,7 +364,7 @@ The orchestrator is giving you one last chance before marking you NEEDS_HUMAN.
    - If you were using library A, try library B
    - If you were adding abstraction, try inline code
 4. **Combine near-misses:** Look at your 2-3 closest-to-working attempts and merge the best parts
-5. **Max 3 iterations** for the rethink, then report outcome
+5. Use remaining iteration budget for the rethink, then report outcome
 
 ### Context7 Usage
 
