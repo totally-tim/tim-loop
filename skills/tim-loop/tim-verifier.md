@@ -110,6 +110,18 @@ Three-phase verification:
 Run all guard commands from the spec's `## Guards` section. If no Guards section,
 run the standard guards: typecheck, lint, existing tests, build.
 
+For **native apps** (macOS, iOS, Android), also run a **launch guard** if the spec
+includes one or if the build produces an executable/app bundle:
+1. Build the app
+2. Launch it (e.g., `open -a MyApp.app`)
+3. Wait 3-5 seconds
+4. Check if the process is still running (e.g., `pgrep -x MyApp`)
+5. If the process crashed or isn't running → guard FAIL with key `guard/launch/crash-on-startup`
+6. Terminate the app gracefully
+
+This catches a critical gap: native apps can compile perfectly but crash on launch
+due to missing entitlements, sandbox conflicts, or runtime initialization errors.
+
 Guard checks verify that existing functionality is not broken.
 If ANY guard fails: verdict = FAIL immediately. Do not proceed to Phase 2 or 3.
 
