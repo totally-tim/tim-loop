@@ -146,6 +146,44 @@ For each user journey step that references a new feature component, page, or end
 Use the User Journeys as a guide for expected navigation paths — each journey step
 implies a reachable feature.
 
+### App Entry Point Wiring Audit
+
+**Always run this for multi-partition builds.** The app entry point (e.g., `LidLaunchApp.swift`,
+`main.ts`, `App.tsx`) is where all engines, services, and views come together. When
+different partitions build these components in isolation, the wiring at the entry point
+is the most fragile integration seam.
+
+**Read the app entry point file and verify:**
+
+1. **Engine initialization:** Every engine/service created by a partition is instantiated
+   in the entry point. Check that constructor arguments match the protocol/class signatures.
+2. **Engine wiring:** Engines that need references to each other are connected. Look for
+   patterns like `engine.setAppState(appState)`, `engine.start()`, handler registration.
+3. **Notification setup:** If the connections map mentions notification-based communication,
+   verify both the poster and observer are set up in the entry point (or the engine init).
+4. **Circular dependency resolution:** If engine A needs engine B and B needs A, verify
+   the entry point resolves this (e.g., creating both first, then setting references).
+5. **Environment injection:** If views read state from `@Environment` or context, verify
+   the entry point injects it (`.environment(appState)`, `.modelContainer(container)`).
+
+**Failure key format:** `integration/wiring/{component}:{issue}`
+
+Examples:
+- `integration/wiring/TriggerEngine:appState-never-set-after-init`
+- `integration/wiring/GestureEngine:start()-never-called`
+- `integration/wiring/AppState:wiggleHandler-not-registered`
+- `integration/wiring/MenuBarPopover:appState-not-in-environment`
+
+**Why this matters:** In the LidLaunch v1 post-mortem, the loop-produced entry point
+created `AppState()` (bare init) and tried to wire everything externally, but the
+wiring code was incomplete — the wiggle handler wasn't connected, the angle stream
+wasn't consumed, notification observers used the wrong closure capture semantics.
+The fix required moving all wiring into `AppState.init()` and adding a `setAppState()`
+pattern to break circular dependencies. This entire class of failure is invisible to
+per-partition compilation but breaks every feature at runtime.
+
+**Severity:** Each wiring failure is a BLOCKING finding.
+
 ### Compliance Report
 
 Produce a markdown table suitable for the PR description:

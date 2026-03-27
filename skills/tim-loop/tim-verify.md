@@ -80,6 +80,30 @@ npm run build                                        # build
 - `guard/lint/no-unused-vars:src/old.ts:10`
 - `guard/test/existing-auth.test.ts:42`
 - `guard/build/esbuild-error:src/index.ts`
+- `guard/launch/crash-on-startup` (native apps only)
+
+**Native App Launch Guard:**
+For native desktop/mobile apps (macOS .app bundles, iOS, Android), add a launch guard
+after the build guard. This catches the critical gap where an app compiles but crashes
+on launch due to missing entitlements, sandbox conflicts, circular dependencies, or
+runtime initialization errors (e.g., `EXC_BREAKPOINT` in `init()`).
+
+```bash
+# macOS example:
+BUILD_DIR=$(xcodebuild -scheme MyApp -showBuildSettings 2>/dev/null | grep ' BUILT_PRODUCTS_DIR' | awk '{print $3}')
+open -a "$BUILD_DIR/MyApp.app" &
+APP_PID=$!
+sleep 3
+if ! pgrep -x "MyApp" > /dev/null 2>&1; then
+  echo "GUARD FAIL: App crashed on launch"
+  exit 1
+fi
+osascript -e 'quit app "MyApp"'
+```
+
+Detection: If the project has `*.xcodeproj`, `*.xcworkspace`, or Xcode build settings,
+add the launch guard automatically. If the spec's `## Guards` section already includes
+a launch guard, use that instead.
 
 **If any guard fails:** verdict = FAIL immediately. Do NOT run Phase 2.
 The prognosis is usually FIXABLE (the builder broke something and needs to revert/fix).
@@ -348,6 +372,9 @@ Verify the seams between partitions are wired up. Use the architect's
 | Route → Router config | Route path is registered in the router (Next.js `app/`, React Router, etc.) | Check router config for the path |
 | Route → Navigation link | Route is linked from existing navigation (sidebar, menu, header) | `grep` for route path in nav components |
 | Event handler → Event emitter | Handler is registered where events are dispatched | Check event registration code |
+| Protocol → Concrete call | Protocol method is called with correct signature (arg count, types) | Read call site and protocol definition, verify match |
+| Engine → AppState wiring | Engine references are stored and methods are called at startup | Read entry point init, verify engine.start()/setHandler() etc. |
+| Notification → Observer | NotificationCenter.post matches addObserver name | `grep` for notification name in both poster and observer |
 | Database migration → Model | New DB columns/tables have corresponding model definitions | Check ORM model files |
 | Environment variable → Usage | New env vars referenced in code are documented in `.env.example` | Check `.env.example` or equivalent |
 
@@ -409,6 +436,50 @@ Examples:
 **Severity:** Each journey checkpoint failure is a BLOCKING failure. If a user can't
 reach or use the feature through the expected path, the implementation is incomplete.
 
+### 3e. Protocol/Interface Consistency Check
+
+Verify that shared protocol/interface definitions match their concrete implementations
+AND their call sites. This catches a critical class of integration failures where builders
+implement a protocol method with the wrong signature, or where the app entry point calls
+a method with arguments that don't match the protocol definition.
+
+**Process:**
+
+1. **Find shared contracts** from the architect's contract (`## Shared Contracts` section)
+2. **For each protocol/interface in shared contracts:**
+   a. Read the protocol definition — extract method signatures (name, params, return type)
+   b. Find all concrete implementations (`grep` for class/struct conformance)
+   c. Read each implementation — verify signature matches protocol exactly:
+      - Same parameter count
+      - Same parameter types (including optionality)
+      - Same return type
+      - Same isolation annotations (`@MainActor`, `nonisolated`, `async`)
+   d. Find all call sites — verify they pass correct arguments:
+      - Same argument count as protocol definition
+      - Correct argument labels
+3. **For notification-based connections** (common in macOS/iOS apps):
+   a. Find all `NotificationCenter.default.post(name:)` calls
+   b. For each, find the corresponding `addObserver(forName:)` call
+   c. Verify the notification names match exactly (string comparison)
+   d. Verify the observer is actually registered before the notification fires
+
+**Failure key format:** `integration/protocol-mismatch/{protocol}:{method}:{description}`
+
+Examples:
+- `integration/protocol-mismatch/ActionExecuting:panicRestore:implementation-has-2-params-protocol-has-1`
+- `integration/protocol-mismatch/RuleEvaluating:evaluate:impl-is-nonisolated-but-called-from-MainActor`
+- `integration/protocol-mismatch/TriggerEngine:triggerManually:returns-Void-but-caller-expects-Bool`
+
+**Why this matters:** In the LidLaunch v1 post-mortem, 5 protocol methods had signature
+mismatches between the shared contracts and their implementations. The app compiled (each
+partition compiled independently against the protocol) but failed at runtime because:
+- `panicRestore(apps:)` was called with 1 arg but implemented with 2
+- `triggerManually()` returned `Void` but the caller expected `Bool`
+- `evaluate(context:)` was `nonisolated` in the protocol but `@MainActor` was needed
+These are invisible to per-partition compilation but break at integration.
+
+**Severity:** Each protocol mismatch is a BLOCKING failure.
+
 ### Phase 3 Skip Conditions
 
 Phase 3 can be partially skipped when not applicable:
@@ -418,6 +489,8 @@ Phase 3 can be partially skipped when not applicable:
   (e.g., single-partition features with no cross-module wiring).
 - **3d (user journeys):** Skipped if the spec has no `## User Journeys` section.
   The verifier should note "User journeys not defined — skipping smoke tests" in the report.
+- **3e (protocol consistency):** Skipped if the architect contract has no `## Shared Contracts`
+  section (single-partition features). Always runs for multi-partition builds.
 
 ## Failure Key Format (all phases)
 
@@ -436,6 +509,8 @@ Phase 3 can be partially skipped when not applicable:
 | Integration | `integration/dead-export/` | dead export | `integration/dead-export/src/components/Form.tsx:Form` |
 | Integration | `integration/connection/` | connection | `integration/connection/POST /api/invoices→Form:not-called` |
 | Integration | `integration/journey/` | journey | `integration/journey/create-invoice:2:form-not-rendered` |
+| Integration | `integration/protocol-mismatch/` | protocol | `integration/protocol-mismatch/ActionExecuting:panicRestore:sig-mismatch` |
+| Guard | `guard/launch/` | launch | `guard/launch/crash-on-startup` |
 
 ## Quality Scoring
 
@@ -448,7 +523,7 @@ After completing all phases, compute quality scores per the dimensions in
 |---|---|---|
 | **Functional completeness** | Plan adherence results | (P0 IMPLEMENTED count / total P0 count) * 10. If any P0 is MISSING, cap at 5. |
 | **Code health** | Tier 1 results | Start at 10. Subtract 1 per typecheck error, 0.5 per lint warning, 1 per failing test. Floor at 1. |
-| **Integration coherence** | Phase 3 results + smoke check | Start at 10. Subtract 2 per stub, 2 per dead export, 1 per missing connection. Add 1 if interactive smoke check passed. Floor at 1. |
+| **Integration coherence** | Phase 3 results + smoke check | Start at 10. Subtract 2 per stub, 2 per dead export, 1 per missing connection, 3 per protocol mismatch. Add 1 if interactive smoke check passed. Add 1 if launch guard passed (native apps). Floor at 1. |
 
 ### Hard Threshold
 

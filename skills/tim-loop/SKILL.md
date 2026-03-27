@@ -475,6 +475,8 @@ while outer_cycle <= MAX_OUTER_CYCLES:
         3d. User journey smoke tests (execute in browser):
             {USER_JOURNEYS}
             Take screenshots at each checkpoint as evidence.
+        3e. Protocol/interface consistency: verify shared protocol signatures match
+            their implementations AND call sites (catches multi-partition signature drift)
 
       Report in task metadata: {
         verdict: "PASS"|"FAIL",
