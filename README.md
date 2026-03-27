@@ -17,6 +17,8 @@ SETUP: Spec --> Integration worktree --> Architect partitions work
 
 THE LOOP (up to 3 cycles):
 
+  0.5 CONTRACT   (cycle 1 only) Builders propose done-criteria.
+                  Verifier reviews. Max 2 rounds negotiation.
   1. BUILD        N builders work in parallel, each in their own worktree.
                   Each change: commit --> guard check --> metric check --> keep or discard.
                   Atomic iteration inspired by autoresearch.
@@ -25,7 +27,8 @@ THE LOOP (up to 3 cycles):
   3. VERIFY       Three-phase verification on integrated build:
                   Phase 1: Guard check (baseline invariants, non-negotiable).
                   Phase 2: Feature verification (metric tracking, structured plan adherence
-                           with per-requirement evidence).
+                           with per-requirement evidence, interactive smoke check
+                           with quality scoring).
                   Phase 3: Integration completeness (stubs, dead code, connections,
                            user journey smoke tests in real browser).
   4. PUBLISH      Push integration branch, create/update PR with priority checklist.
@@ -97,7 +100,9 @@ Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch) an
 | On failure | Immediate revert (non-negotiable) | Report as failure, try different approach |
 | Metric | Not tracked | Tracked (higher/lower is better) |
 
-**Smart stuck escalation:** After 5 consecutive discards, instead of aborting immediately, the builder gets one "radical rethink" attempt — re-read everything, try the opposite approach, combine near-misses. Only aborts if the rethink also fails.
+**Smart stuck escalation:** After 3 consecutive discards, the builder makes a strategic refine/pivot decision. If pivoting, it tries the opposite approach — combine near-misses, switch libraries, restructure. Only aborts if the rethink also fails.
+
+**Scored evaluation with hard thresholds:** Verifier and auditor independently score the build across 6 dimensions (functional completeness, code health, integration coherence, implementation depth, test thoroughness, spec fidelity). Any dimension below 6/10 fails the build — even if all tests pass. Scoring criteria and calibration examples are centralized in `tim-evaluation-calibration.md`.
 
 ## Integration Completeness Verification (Phase 3)
 
@@ -311,7 +316,14 @@ Other optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessm
 - **Per-builder worktree isolation** — each builder works in their own git worktree. No cascading build errors. Unambiguous failure attribution.
 - **Keep/discard iteration** — autoresearch-style atomic commits with guard check + metric check. Keep improvements, discard regressions.
 - **Guard vs feature verification** — guards protect existing functionality (non-negotiable revert). Feature verification tracks progressive improvement.
-- **Smart stuck escalation** — 5 consecutive discards triggers a radical rethink attempt before aborting. Re-read everything, try opposite approach, combine near-misses.
+- **Smart stuck escalation** — 3 consecutive discards triggers a refine/pivot decision. Builder makes an explicit strategic choice before the orchestrator intervenes. Rethink uses remaining iteration budget, not a fixed 3.
+- **Scored evaluation criteria** — verifier scores functional completeness, code health, integration coherence (1-10). Auditor scores implementation depth, test thoroughness, spec fidelity (1-10). Hard threshold: no dimension below 6. Fails even if tests pass.
+- **Evaluator calibration** — centralized `tim-evaluation-calibration.md` with scoring rubrics, few-shot examples, and anti-leniency directives. Prevents the "evaluator talks itself into approving mediocre work" failure mode.
+- **Contract negotiation** — on cycle 1, builders propose done-criteria before building. Verifier reviews testability. Bridges the gap between high-level spec and verifiable implementation.
+- **Interactive smoke check** — after Tier 1 passes in Phase 2, verifier starts the dev server, navigates key routes, and screenshots critical states. Feeds into quality scores. Catches broken UX before full Phase 3.
+- **Adaptive iteration budget** — architect recommends per-partition iteration budgets based on complexity. Simple partitions get 4-6 iterations, complex ones get 8-12. Global cap still applies.
+- **Per-phase duration tracking** — TSV log includes `phase` and `duration_s` columns for per-phase cost analysis.
+- **Scope amplification** — tim-spec asks "What would make this 10/10?" after brainstorming, proposing P1/P2 features that round out the user experience.
 - **Reviewer as integrator** — reviewer merges builder branches one at a time with guard checks after each merge. Identifies which merge broke what.
 - **gstack import** — tim-spec can consume gstack design docs and test plans as starting points. Brainstorming remains the default.
 - **Metric-driven specs** — optional `## Metric`, `## Guards`, `## Verify Command` sections enable progressive improvement tracking. Falls back to pass/fail without them.
@@ -378,6 +390,7 @@ skills/
 │   ├── tim-verifier.md    # Verifier agent prompt + reference
 │   ├── tim-reviewer.md    # Reviewer agent prompt + reference
 │   ├── tim-verify.md      # Three-phase verification strategy (guard + feature + integration completeness)
+│   ├── tim-evaluation-calibration.md  # Scoring criteria, thresholds, few-shot calibration, anti-leniency
 │   └── README.md          # Detailed docs
 ├── tim-spec/
 │   └── SKILL.md           # Spec generation skill (brainstorming + gstack import)

@@ -45,11 +45,14 @@ Agent tool (general-purpose):
     6. Score confidence per requirement: HIGH (real + thorough + wired), MEDIUM (partial), LOW (uncertain)
     7. Produce structured task metadata with deep_audit, connection_audit, contract_usage, findings
     8. Include a human-readable compliance_report in metadata for the PR description
+    9. Read tim-evaluation-calibration.md on your first turn for scoring criteria and calibration
+    10. Score every quality dimension 1-10 during the deep audit. No dimension below 6 is acceptable.
 
     ## First Turn
 
     1. Read ~/.claude/skills/tim-loop/tim-auditor.md for detailed process guidance
-    2. Wait for your first task assignment
+    2. Read ~/.claude/skills/tim-loop/tim-evaluation-calibration.md for scoring criteria, thresholds, and calibration examples
+    3. Wait for your first task assignment
 ```
 
 ---
@@ -162,14 +165,53 @@ Produce a markdown table suitable for the PR description:
 Include both requirements and acceptance criteria in the same table. Acceptance criteria
 use priority "AC" and are gated the same as P0 (must have REAL impl + non-MISSING test).
 
+### Quality Scoring
+
+After completing the deep audit for all requirements, compute quality scores per the
+dimensions in `tim-evaluation-calibration.md`:
+
+- **Implementation depth** (1-10): Score = (REAL count / total requirements) * 10. If any P0 is STUB or MISSING, cap at 5.
+- **Test thoroughness** (1-10): Score = (THOROUGH count / total requirements) * 10. Subtract 1 per SHALLOW.
+- **Spec fidelity** (1-10): Subjective judgment of how closely the implementation matches the spec's intent.
+
+If any dimension scores below 6, set verdict = FAIL regardless of per-requirement verdicts.
+
+Include `quality_scores` and `score_rationale` in task metadata.
+
+### Anti-Leniency
+
+Read the Anti-Leniency Directives in `tim-evaluation-calibration.md` and follow them
+strictly during your deep audit. In particular:
+
+- **Never upgrade STUB to REAL** because "it mostly works." Read the function body. If
+  the core business logic is missing, it's a STUB.
+- **Never upgrade SHALLOW to THOROUGH** because "the test file exists." Read the assertions.
+  If they only check existence or truthiness, the test is SHALLOW.
+- **Do not talk yourself into approving.** When you notice yourself writing justifications
+  for why something is "good enough," stop and re-score from scratch.
+- **A passing test suite does not mean the code is good.** Tests can pass while implementations
+  use hardcoded values. Score based on source code, not test results.
+
 ### Communication Protocol
 
 **Task completion metadata:**
+
+Include `quality_scores` and `score_rationale` alongside existing fields:
 
 ```json
 {
   "verdict": "PASS",
   "prognosis": null,
+  "quality_scores": {
+    "implementation_depth": 9,
+    "test_thoroughness": 8,
+    "spec_fidelity": 9
+  },
+  "score_rationale": {
+    "implementation_depth": "8/8 requirements REAL with full business logic",
+    "test_thoroughness": "7/8 THOROUGH, 1 SHALLOW (error toast test only checks render)",
+    "spec_fidelity": "implementation captures spec intent, auth flow follows recommended approach"
+  },
   "deep_audit": [
     {
       "requirement": "[P0] JWT refresh token rotation",
@@ -225,12 +267,22 @@ use priority "AC" and are gated the same as P0 (must have REAL impl + non-MISSIN
 }
 ```
 
-On FAIL, include structured findings the orchestrator can route by builder:
+On FAIL (including score-based failures), include structured findings:
 
 ```json
 {
   "verdict": "FAIL",
   "prognosis": "FIXABLE",
+  "quality_scores": {
+    "implementation_depth": 6,
+    "test_thoroughness": 4,
+    "spec_fidelity": 7
+  },
+  "score_rationale": {
+    "implementation_depth": "7/8 requirements REAL, 1 STUB (rate limiting)",
+    "test_thoroughness": "4/8 THOROUGH, 2 SHALLOW, 2 MISSING — below threshold",
+    "spec_fidelity": "implementation matches spec intent for most features"
+  },
   "deep_audit": [
     {
       "requirement": "[P0] Rate limiting on auth endpoints",

@@ -65,6 +65,30 @@ Read the gstack design doc and test plan. Extract and transform:
 
 Invoke `superpowers:brainstorming` to explore the idea with the user. Follow the brainstorming process exactly (one question at a time, propose approaches, present design, get approval).
 
+### Step 1b-2: Scope Amplification
+
+After brainstorming (or gstack import review) completes and before user journeys, push the user to think bigger:
+
+1. **Ask the 10/10 question:**
+   > "What would make this a 10/10 feature — not just functional, but polished and complete?
+   > Think about what would make a user say 'this is really well done' vs 'this works.'"
+
+2. **Propose 2-3 features beyond what the user asked for.** Look for:
+   - Features that make the app feel complete (error states, loading states, empty states, zero-data states)
+   - Features that add delight (animations, keyboard shortcuts, smart defaults, undo)
+   - Features that prevent common frustrations (confirmation dialogs, autosave, input validation with helpful messages)
+   - Features that round out the user experience (responsive design, accessibility, offline handling)
+
+3. **Present as P1/P2 candidates.** The user decides what to include:
+   > "Based on our discussion, here are a few additions that would elevate this feature:
+   > - [P1 candidate] Error state handling with retry — when the API fails, show a clear message with a retry button instead of a blank screen
+   > - [P2 candidate] Keyboard shortcut (Cmd+Enter) to submit the form — small polish that power users notice
+   > - [P2 candidate] Optimistic UI update — show the result immediately while the API call completes in the background
+   >
+   > Want to include any of these?"
+
+4. **Respect the user's scope decisions.** If they decline everything, proceed without adding scope. Never force features the user doesn't want.
+
 ### Step 1c: Co-create User Journeys with the User
 
 **This step runs after brainstorming/import review, before codebase exploration.**
