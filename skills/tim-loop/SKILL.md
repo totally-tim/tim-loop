@@ -60,6 +60,8 @@ Extract these optional sections:
 - `## Guards` — baseline invariant commands (must exit 0)
 - `## Verify Command` — shell command to extract metric value
 - `## User Journeys` — end-to-end browser/API flows for integration smoke tests
+- `## Spike Tasks` — pre-loop verification experiments for hardware/undocumented APIs
+- `## Compiler Traps` — language-specific patterns that waste builder iterations
 
 If requirements lack priority tags, warn the user and default all to `[P0]`.
 
@@ -138,6 +140,7 @@ For each agent, fill in the placeholders from their prompt template with:
 - `{CONTRACT_CONTENT}` — full text of `.tim-loop-contract.md` (filled after architect phase), for auditor
 - `{SPEC_REQUIREMENTS}` — the `## Requirements` section content from the spec (for embedding in auditor task)
 - `{SPEC_ACCEPTANCE_CRITERIA}` — the `## Acceptance Criteria` section content from the spec (for embedding in auditor task)
+- `{COMPILER_TRAPS}` — from spec's `## Compiler Traps` section, or "None"
 - Other placeholders filled as the loop progresses
 
 The architect will study the codebase and produce the implementation contract.
@@ -145,6 +148,25 @@ The verifier will identify available test runners and frameworks.
 The reviewer will study the codebase as part of its initial turn.
 
 Wait for all 3 agents to report ready before proceeding to the Architect Phase.
+
+### Step 5a: Run Spike Tasks (if present in spec)
+
+If the spec has a `## Spike Tasks` section, run each spike BEFORE the architect phase.
+Spike tasks verify assumptions about hardware, undocumented APIs, or platform behavior
+that would otherwise propagate as wrong assumptions into the contract and all builders.
+
+For each spike task:
+1. Run the command in the integration worktree
+2. Capture the output
+3. Compare against the expected result
+4. If a spike FAILS: warn the user and ask how to proceed:
+   - Update the spec requirement to mark the approach as "TBD"
+   - Try an alternative approach (user provides)
+   - Proceed anyway (user accepts the risk)
+5. If a spike PASSES: record the verified information for the architect
+
+Pass spike results to the architect as `{SPIKE_RESULTS}` so the contract
+is based on verified behavior, not assumptions.
 
 ### Step 5b: Architect Phase
 
@@ -174,6 +196,16 @@ Wait for all 3 agents to report ready before proceeding to the Architect Phase.
    - Were shared contracts actually written to disk?
    - Is the partition count within max_builders?
    - Does it include a `## Connections` section? (required even if empty)
+   - **Contradiction check:** Do any partitions require capabilities that conflict
+     with settings owned by another partition? (e.g., one partition needs sandbox
+     disabled for IOKit but another partition's notes say sandbox is enabled)
+   - **Isolation check:** Does every partition say "Can compile/test independently: YES"?
+     If any partition says "PARTIALLY" or "NO", REJECT the contract. The architect
+     must either merge dependent partitions, create proper interface stubs in shared
+     contracts, or restructure so each partition compiles in isolation.
+   - **Spike alignment check:** If spike tasks ran (Step 5a), verify the contract's
+     implementation notes align with spike results. Reject if the contract prescribes
+     an approach that a spike disproved.
    If not: reject with specific feedback (SendMessage type: plan_approval_response, approve: false).
    If acceptable: approve (approve: true).
 

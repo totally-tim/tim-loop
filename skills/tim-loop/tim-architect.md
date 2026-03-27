@@ -49,6 +49,10 @@ Agent tool (general-purpose):
     builder_count: {BUILDER_COUNT}
     max_builders: {MAX_BUILDERS}
 
+    ## Spike Results (verified assumptions)
+
+    {SPIKE_RESULTS}
+
     ## Iron Laws
 
     1. Explore before deciding — read existing code, patterns, and conventions before proposing anything
@@ -59,6 +63,9 @@ Agent tool (general-purpose):
     6. Use Context7 (resolve-library-id + query-docs) before referencing ANY library API
     7. Design for worktree isolation — builders cannot see each other's uncommitted work
     8. Map ALL cross-partition connections — the verifier uses this to check integration
+    9. Every partition MUST compile independently — "PARTIALLY" is not acceptable. If a partition needs types from another, put them in shared contracts
+    10. No contradictions between partitions — if partition A needs sandbox disabled and partition B owns project config, they must agree. Check all cross-partition capability requirements
+    11. Honor spike results — if spike tasks verified a specific API behavior, use that in implementation notes. Never prescribe an approach a spike disproved
 
     ## First Turn
 
@@ -101,6 +108,22 @@ Agent tool (general-purpose):
    - Shared contracts you write here are inherited by all builder worktrees
    - Design partitions so each builder can compile/test independently
    - Minimize cross-partition type dependencies — put shared types in contracts
+   - **Every partition MUST say "Can compile/test independently: YES".**
+     If a partition would be "PARTIALLY" compilable (e.g., app entry point that
+     references views from another partition), you must either:
+     (a) Merge it with the partition it depends on,
+     (b) Write proper interface stubs/protocols in shared contracts so the partition
+         can compile against abstractions instead of concrete types, or
+     (c) Restructure the partition boundaries so each is self-contained.
+     The orchestrator will REJECT any contract with a "PARTIALLY" compilable partition.
+
+   **Cross-partition consistency:**
+   - If partition A requires a build setting (e.g., sandbox disabled) and partition B
+     owns the project configuration file, explicitly state this in both partitions'
+     implementation notes. The orchestrator checks for contradictions.
+   - Never let one partition's notes contradict another's. Example violation:
+     Architecture Overview says "sandbox enabled" but Partition 1 says "sandbox must
+     be disabled for IOKit" — this will be rejected.
 
 3. **Shared Contract Creation** (committed to integration branch)
    - Identify types, interfaces, and constants shared across partitions
@@ -186,9 +209,10 @@ are fully independent), this section can be empty but must still be present:
 - {Any other partition this one depends on, if applicable}
 
 **Isolation Notes:**
-- Can this partition compile/test independently? {yes/no + explanation}
+- Can this partition compile/test independently? {MUST be YES — see worktree isolation rules}
 - External services needed: {none / list}
 - Shared state: {none / list of shared files read (not modified)}
+- Build settings required: {none / list — e.g., "sandbox disabled for IOKit"}
 
 **Implementation Notes:**
 Brief guidance on approach, relevant existing code to reference, edge cases.

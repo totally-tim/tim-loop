@@ -48,6 +48,10 @@ Agent tool (general-purpose):
     Max iterations: {ITERATION_BUDGET}
     {PREVIOUS_FINDINGS_OR_EMPTY}
 
+    ## Compiler Traps (avoid these — they waste iterations)
+
+    {COMPILER_TRAPS}
+
     ## Iron Laws
 
     1. ONE atomic change per iteration — if you need "and" to describe it, split it
@@ -58,13 +62,15 @@ Agent tool (general-purpose):
     6. Only build what's in the spec — no scope creep
     7. STAY IN YOUR LANE — only create/modify files listed in your partition scope
     8. Use TaskCreate/TaskUpdate for ALL progress tracking
+    9. Read the Compiler Traps section above BEFORE writing any code — these are known pitfalls for this project's language/framework that will cause guard failures
 
     ## First Turn
 
     1. cd {BUILDER_WORKTREE}
     2. Read ~/.claude/skills/tim-loop/tim-builder.md for detailed process guidance
     3. Study the codebase: architecture, test patterns, relevant domains
-    4. Create sub-tasks for YOUR partition requirements, then build using keep/discard
+    4. **Review Compiler Traps above** — internalize these patterns before coding
+    5. Create sub-tasks for YOUR partition requirements, then build using keep/discard
 ```
 
 **When partition_count == 1 (solo mode, backward compatible):**
@@ -105,6 +111,10 @@ Agent tool (general-purpose):
     Max iterations: {ITERATION_BUDGET}
     {PREVIOUS_FINDINGS_OR_EMPTY}
 
+    ## Compiler Traps (avoid these — they waste iterations)
+
+    {COMPILER_TRAPS}
+
     ## Iron Laws
 
     1. ONE atomic change per iteration — if you need "and" to describe it, split it
@@ -114,13 +124,15 @@ Agent tool (general-purpose):
     5. Use Context7 (resolve-library-id + query-docs) before ANY library API call
     6. Only build what's in the spec — no scope creep
     7. Use TaskCreate/TaskUpdate for ALL progress tracking
+    8. Read the Compiler Traps section above BEFORE writing any code
 
     ## First Turn
 
     1. cd {BUILDER_WORKTREE}
     2. Read ~/.claude/skills/tim-loop/tim-builder.md for detailed process guidance
     3. Study the codebase: architecture, test patterns, relevant domains
-    4. Create sub-tasks for your requirements, then build using keep/discard
+    4. **Review Compiler Traps above** — internalize these patterns before coding
+    5. Create sub-tasks for your requirements, then build using keep/discard
 ```
 
 ---

@@ -157,6 +157,49 @@ Also discover information relevant to user journeys:
 - **Existing navigation:** What navigation patterns exist (sidebar, top nav, routing)?
 - **Auth requirements:** Does the app require login? What test credentials exist?
 
+### Step 2b: Identify Spike Tasks
+
+If the spec involves **hardware APIs, undocumented system interfaces, or platform-specific
+behavior**, you MUST identify spike tasks — small throwaway experiments that verify
+assumptions before they propagate into the spec.
+
+**When to add spike tasks:**
+- The feature uses an undocumented or vendor-specific API (IOKit HID, private frameworks)
+- The feature depends on specific hardware behavior (sensors, peripherals, GPU)
+- The spec prescribes a specific implementation approach for something you haven't verified
+- The feature uses a system API whose behavior varies by OS version or hardware model
+
+**Process:**
+1. Review the Architecture and Requirements for hardware/system API dependencies
+2. For each dependency, ask: "Has this specific API surface been verified on the target platform?"
+3. If not, create a spike task that can be run before the loop starts
+4. Present spike tasks to the user: "These assumptions should be verified before building. Want to run them now?"
+
+**If a spike can't be run** (no hardware access, no test environment):
+- Do NOT prescribe the implementation approach in the spec
+- Instead, mark it as "approach TBD — builder must research first"
+- Add it to `## Open Questions` with the specific unknowns
+
+### Step 2c: Identify Compiler Traps
+
+For projects using **strict type systems or complex concurrency models** (Swift, Rust,
+TypeScript strict mode, etc.), identify compiler traps that commonly cause builder
+iterations to be wasted on type errors rather than feature work.
+
+**When to add compiler traps:**
+- Swift projects using `@MainActor`, `Sendable`, `@Observable`, SwiftData
+- Rust projects with complex lifetime or borrow checker patterns
+- TypeScript projects with strict mode, complex generics, or mapped types
+- Any project where the compiler enforces patterns that are easy to get wrong
+
+**Process:**
+1. Read the project's compiler/build configuration
+2. Identify strict settings that commonly trip up AI-generated code
+3. Document the patterns as a `## Compiler Traps` section in the spec
+
+These traps are injected into every builder's prompt by tim-loop so they avoid
+burning iterations on type errors.
+
 ### Step 3: Generate Spec
 
 Convert the brainstorming design (or gstack import) into the standardized spec format below. Every required section must be filled — if information is missing, ask the user before generating.
@@ -173,6 +216,8 @@ Recommended but not required:
 - Guards (baseline invariants)
 - Verify Command (extracts the metric)
 - User Journeys (end-to-end browser/API flows co-created with user)
+- Spike Tasks (for hardware/undocumented API features — strongly recommended)
+- Compiler Traps (for strict type systems — strongly recommended)
 
 ### Step 5: Save Spec
 
@@ -245,6 +290,12 @@ Each guard is a shell command that must exit 0.
 - `<lint command>` — e.g., `npm run lint`
 - `<build command>` — e.g., `npm run build`
 
+For **native apps** (macOS, iOS, Android), also include:
+- `<build command>` — e.g., `xcodebuild -scheme MyApp build 2>&1 | tail -1` (must show BUILD SUCCEEDED)
+- `<test command>` — e.g., `xcodebuild test -scheme MyApp -destination 'platform=macOS'`
+- `<launch guard>` — verify the app launches without crashing:
+  e.g., `open -W MyApp.app & sleep 3 && pgrep -x MyApp > /dev/null` (exits 0 if running)
+
 When a builder's change breaks a guard, that change is immediately reverted
 (discarded) regardless of whether the feature metric improved.
 
@@ -266,6 +317,40 @@ What kinds of tests to write and how.
 - Blast radius: [greenfield | modifies existing module | cross-cutting refactor]
 - Risk level: [low | medium | high]
 - Affected systems: [list of systems/modules touched]
+
+## Spike Tasks (recommended for hardware/system API features)
+Small throwaway experiments to verify assumptions BEFORE the loop starts.
+Each spike is a shell command or small script that confirms an API works as expected.
+
+- [ ] Spike: Enumerate HID devices and find the target sensor
+  Command: `swift -e 'import IOKit.hid; ...'`
+  Verifies: The sensor exists and is accessible with the expected UsagePage/Usage
+- [ ] Spike: Read one raw value from the sensor
+  Command: `swift -e '...'`
+  Verifies: Data format (degrees vs centidegrees, byte order, etc.)
+
+If a spike cannot be run (no hardware, no test environment), mark the corresponding
+requirement's implementation approach as "TBD — builder must research first" and
+add it to Open Questions.
+
+## Compiler Traps (recommended for strict type systems)
+Patterns that commonly cause AI-generated code to fail compilation. These are
+injected into builder prompts to prevent wasted iterations on type errors.
+
+Example (Swift with Concurrency):
+- `@MainActor` is default isolation — `nonisolated` required on non-UI helpers
+- `@Observable` requires `@Bindable var` for two-way bindings in views
+- SwiftData `@Model` objects cannot cross actor boundaries — use value types
+- `cos()` is ambiguous between `Double` and `CGFloat` — use explicit `CGFloat(cos(x))`
+- NSOpenPanel requires `NSApp.activate()` in LSUIElement apps or it crashes
+
+Example (Rust):
+- Borrowed references in async blocks need `Arc`/`Clone`
+- `Send + Sync` required for anything crossing thread boundaries
+
+Example (TypeScript strict):
+- `strictNullChecks` means optional chaining is mandatory
+- Generic constraints must be explicit, not inferred
 
 ## Open Questions (optional)
 Unknowns the builder should investigate during codebase study.
@@ -340,3 +425,5 @@ If the user doesn't specify priorities, propose a priority assignment and get co
 - **Never treat gstack import as a shortcut.** Imported artifacts still need codebase exploration (Step 2) and user review. gstack provides design intent; the spec needs implementation-level detail.
 - **Never auto-generate user journeys.** User journeys must be co-created with the user. Only the user knows the expected navigation paths and product behavior. Present drafts for review, but never save without the user confirming the flows are correct.
 - **Never skip user journeys for features with UI.** If the feature has any user-facing component, user journeys are critical for catching integration issues. For API-only features, use API call sequences instead.
+- **Never prescribe implementation details for undocumented APIs.** If you haven't verified an API works a specific way (e.g., a HID sensor's data format, a private framework's behavior), don't write it into the spec as fact. Add a spike task instead, or mark the approach as "TBD — builder must research."
+- **Never skip spike tasks for hardware features.** If the spec involves hardware sensors, peripherals, or platform-specific system APIs, spike tasks are critical. Wrong assumptions propagate through the architect's contract into every builder's work.
