@@ -131,6 +131,8 @@ Run Tier 1-3 checks for NEW functionality:
 - New functionality working
 - Spec overrides (Tier 3)
 - Plan adherence check
+  - Done-contract adherence check (if contract negotiation ran: verify each builder
+    delivered what they committed to in their done-contract, not just the spec)
 
 If metric_mode == "metric": run the Verify Command and extract the metric value.
 Compare to baseline to compute metric_delta.
@@ -186,6 +188,19 @@ Examples:
 - `tier1/test/payment.test.ts:42` (new test)
 - `tier2/playwright/login-page-404`
 - `plan/requirement-missing:rate-limiting`
+
+**Defensive review keys use the `defense/` prefix:**
+- `defense/validation/POST-api-invoices:missing-amount-check`
+- `defense/security/csv-injection:src/export/csv.ts:42`
+- `defense/security/sql-injection:src/db/queries.ts:15`
+- `defense/atomicity/create-payroll-run:no-transaction-rollback`
+- `defense/consistency/surcharge-defaults:duplicated-in-two-files`
+
+Defensive findings route by file ownership (same as other failure keys).
+For cross-partition issues, route to the builder that introduced the new data path.
+Security (defense/security/*) and atomicity partial-failure (defense/atomicity/*) findings
+are BLOCKING. Input validation and data consistency findings are NON-BLOCKING unless
+they create a clear data loss or corruption path.
 
 Guard failures use the `guard/` prefix. Feature failures use `tier{N}/`.
 
@@ -263,6 +278,10 @@ TaskUpdate:
       { requirement: "[P0] Rate limiting", priority: "P0", status: "IMPLEMENTED", impl_evidence: "src/middleware/rateLimit.ts:15", test_evidence: "tests/middleware/rateLimit.test.ts:8" },
       { requirement: "[P1] Error toast", priority: "P1", status: "IMPLEMENTED", impl_evidence: "src/components/ErrorToast.tsx:22", test_evidence: "tests/components/ErrorToast.test.tsx:10" }
     ],
+    done_contract_adherence: [
+      { builder: "builder-1", committed: "POST /api/invoices returns 201 with invoice object", status: "DELIVERED", evidence: "src/api/invoices.ts:42" },
+      { builder: "builder-1", committed: "Tests cover happy path + 2 error cases", status: "DELIVERED", evidence: "tests/api/invoices.test.ts:8" }
+    ],
     integration_completeness: {
       stubs_found: 0,
       dead_exports_found: 0,
@@ -301,6 +320,9 @@ TaskUpdate:
     plan_adherence: [
       { requirement: "[P0] Rate limiting", priority: "P0", status: "IMPLEMENTED", impl_evidence: "src/middleware/rateLimit.ts:15", test_evidence: "tests/middleware/rateLimit.test.ts:8" },
       { requirement: "[P0] JWT validation", priority: "P0", status: "MISSING", impl_evidence: null, test_evidence: null }
+    ],
+    done_contract_adherence: [
+      { builder: "builder-3", committed: "Call calculateCompensation() per employee", status: "NOT_DELIVERED", evidence: "imported but never called in POST handler" }
     ],
     integration_completeness: {
       stubs_found: 1,

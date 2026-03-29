@@ -319,10 +319,10 @@ Other optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessm
 - **Smart stuck escalation** — 3 consecutive discards triggers a refine/pivot decision. Builder makes an explicit strategic choice before the orchestrator intervenes. Rethink uses remaining iteration budget, not a fixed 3.
 - **Scored evaluation criteria** — verifier scores functional completeness, code health, integration coherence (1-10). Auditor scores implementation depth, test thoroughness, spec fidelity (1-10). Hard threshold: no dimension below 6. Fails even if tests pass.
 - **Evaluator calibration** — centralized `tim-evaluation-calibration.md` with scoring rubrics, few-shot examples, and anti-leniency directives. Prevents the "evaluator talks itself into approving mediocre work" failure mode.
-- **Contract negotiation** — on cycle 1, builders propose done-criteria before building. Verifier reviews testability. Bridges the gap between high-level spec and verifiable implementation.
+- **Mandatory contract negotiation** — on cycle 1, builders propose done-criteria before building. Verifier reviews testability. Done-contracts are wired into verification: the verifier checks "did the builder deliver what they committed to?" not just "does the code match the spec?" Done-contracts are persisted through resume and agent refresh.
 - **Interactive smoke check** — after Tier 1 passes in Phase 2, verifier starts the dev server, navigates key routes, and screenshots critical states. Feeds into quality scores. Catches broken UX before full Phase 3.
 - **Adaptive iteration budget** — architect recommends per-partition iteration budgets based on complexity. Simple partitions get 4-6 iterations, complex ones get 8-12. Global cap still applies.
-- **Per-phase duration tracking** — TSV log includes `phase` and `duration_s` columns for per-phase cost analysis.
+- **Per-phase duration tracking** — TSV log includes `phase`, `duration_s`, `start_ts`, and `end_ts` columns (ISO 8601 UTC) for per-phase cost and bottleneck analysis.
 - **Scope amplification** — tim-spec asks "What would make this 10/10?" after brainstorming, proposing P1/P2 features that round out the user experience.
 - **Reviewer as integrator** — reviewer merges builder branches one at a time with guard checks after each merge. Identifies which merge broke what.
 - **gstack import** — tim-spec can consume gstack design docs and test plans as starting points. Brainstorming remains the default.
@@ -342,6 +342,12 @@ Other optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessm
 - **Abort and resume** — per-partition state saved to `.tim-loop-resume.json`. Resume spawns builders only for incomplete partitions. All worktrees preserved.
 - **Agent refresh between cycles** — all agents shut down and re-spawn with fresh context windows between outer cycles. Verifier discovery carried forward.
 - **Backward compatible** — single partition = single builder worktree with no scope restrictions.
+- **Defensive review** — Phase 2 verification includes a 4-category defensive review: input validation at API boundaries, security patterns (CSV injection, SQL injection, XSS, command injection, path traversal), atomicity/error handling (transactions, rollback), and data consistency. Scoped to new code plus new data paths to existing sinks. Catches the class of issues that external AI code review finds but per-file testing misses.
+- **Typed message filtering** — orchestrator suppresses idle messages from completed builders but always processes escalation-prefixed messages (QUESTION, NEEDS_HUMAN, SCOPE_CONFLICT, CONTRACT_ISSUE). No builder shutdown/spawn cycling.
+- **Architect schema validation** — partition implementation notes use a structured Decision/Rationale/Cross-partition-dependency schema. Forces clarity without stripping technical detail.
+- **Builder subagent mode** — for HIGH complexity partitions (13+ requirements or 8+ files across 3+ directories), builders dispatch sequential subagents for focused implementation chunks. Builder retains commit/revert/keep-discard ownership. Subagents only write code.
+- **Subagent-powered auditor** — when total requirements exceed 15, the auditor dispatches per-partition subagents for parallel deep-reading. Cross-partition checks (wiring, reachability, contract usage) stay centralized. Fallback to direct mode on subagent failure.
+- **Constants ownership** — architect Iron Law: all shared constants and types must live in architect-owned contract files. No partition may define a constant another partition also needs.
 
 ## Configuration
 
@@ -378,6 +384,10 @@ Defaults are overridable per-spec via the `## Loop Config` section:
 **Top-down verification** — Phase 3 (integration completeness) verifies the feature works as a product, not just as code. Stub scans, dead export detection, connection verification, and user journey smoke tests catch the "green tests, broken app" problem that bottom-up verification misses.
 
 **Route by file ownership** — Failures and review findings are routed to the builder that owns the relevant files. Two builders never fix the same file. Unroutable items default to builder-1.
+
+**Defense in depth, not just existence checking** — The loop verifies three things independently: does the feature exist (plan adherence), is the feature robust (defensive review), and is the feature reachable (integration completeness). External code review tools consistently found security and atomicity issues that per-file testing missed. The defensive review checklist catches these inside the loop.
+
+**Subagents for scale, not for decomposition** — When agents hit context or complexity limits, they dispatch subagents for grunt work (searching, reading, implementing chunks) while retaining ownership of judgment calls (keep/discard, scoring, cross-partition checks). The parent agent orchestrates; subagents are hands, not brains.
 
 ## File Structure
 

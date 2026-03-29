@@ -141,6 +141,10 @@ For each agent, fill in the placeholders from their prompt template with:
 - `{SPEC_REQUIREMENTS}` — the `## Requirements` section content from the spec (for embedding in auditor task)
 - `{SPEC_ACCEPTANCE_CRITERIA}` — the `## Acceptance Criteria` section content from the spec (for embedding in auditor task)
 - `{COMPILER_TRAPS}` — from spec's `## Compiler Traps` section, or "None"
+- `{PARTITION_COMPLEXITY}` — "NORMAL" or "HIGH" from architect contract's partition complexity field
+- `{DONE_CONTRACT}` — builder's negotiated done-contract from Step 0.5, or "None"
+- `{PARTITION_ASSIGNMENTS}` — partition-to-requirement mapping for auditor subagent dispatch
+- `{TOTAL_REQUIREMENT_COUNT}` — count of all requirements + acceptance criteria
 - Other placeholders filled as the loop progresses
 
 The architect will study the codebase and produce the implementation contract.
@@ -213,6 +217,8 @@ is based on verified behavior, not assumptions.
    - `partitions` — array of { name, files, requirements, dependencies, iteration_budget }
    - `contract_content` — full text of .tim-loop-contract.md
    - `partition_count` — number of partitions
+   - `partition_assignments` — formatted string mapping each partition to its requirements (for auditor subagent dispatch)
+   - `total_requirement_count` — count of all requirements + acceptance criteria (for auditor adaptive threshold)
    - `connections_map` — the `## Connections` section content (for verifier Phase 3c)
 
    For each partition, parse `iteration_budget` if present:
@@ -283,8 +289,8 @@ Initialize the TSV progress log:
 
 ```
 ## Write header + baseline row to tim-loop-results.tsv in integration worktree
-cycle\tphase\tbuilder\titeration\tmetric\tguard\tstatus\tduration_s\tdescription
-0\tBASELINE\t-\t0\t{baseline_metric}\tpass\tbaseline\t{duration}\tinitial state
+cycle\tphase\tbuilder\titeration\tmetric\tguard\tstatus\tduration_s\tstart_ts\tend_ts\tdescription
+0\tBASELINE\t-\t0\t{baseline_metric}\tpass\tbaseline\t{duration}\t{start_ts}\t{end_ts}\tinitial state
 ```
 
 ## THE LOOP
@@ -296,9 +302,9 @@ baseline, baseline_metric, verifier_discovery = (from Step 6, or empty/null if s
 
 while outer_cycle <= MAX_OUTER_CYCLES:
 
-  ## 0.5. CONTRACT NEGOTIATION (cycle 1 only)
+  ## 0.5. CONTRACT NEGOTIATION (mandatory on cycle 1)
   if outer_cycle == 1:
-    Tell user: "Cycle 1: Negotiating done-contracts with builders..."
+    Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Negotiating done-contracts with builders..."
     ## For each active partition, ask the builder to propose what "done" looks like.
     ## The verifier reviews each proposal. Max 2 rounds per partition.
 
@@ -334,8 +340,14 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     for any still rejected after 2 rounds:
       Log warning: "Contract not fully approved, proceeding with builder's latest proposal."
 
+    ## Persist done-contracts for downstream use
+    done_contracts = {}
+    for each partition:
+      done_contracts[partition.builder_name] = builder_contract_from_metadata
+    ## done_contracts are passed to build tasks, verification, resume, and refresh
+
     ## Log contract negotiation to TSV
-    append_tsv_row(outer_cycle, "CONTRACT", "-", 0, null, "pass", "complete", duration_s, "contract negotiation")
+    append_tsv_row(outer_cycle, "CONTRACT", "-", 0, null, "pass", "complete", duration_s, start_ts, end_ts, "contract negotiation")
 
   ## 1. BUILD (with keep/discard iteration per builder)
   Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Starting build ({partition_count} builder(s))..."
@@ -348,6 +360,8 @@ while outer_cycle <= MAX_OUTER_CYCLES:
       Worktree path: {partition.builder_worktree}
       Your file scope: {partition.files}
       Your requirements: {partition.requirements}
+      Your done-contract (what you committed to deliver):
+      {done_contracts[partition.builder_name] or "No done-contract (cycle 2+ or negotiation skipped)"}
       Implementation contract: {contract_content}
 
       ## Iteration Discipline (autoresearch-style)
@@ -456,6 +470,11 @@ while outer_cycle <= MAX_OUTER_CYCLES:
       Baseline failures (ignore these): {baseline}
       Baseline metric: {baseline_metric}
 
+      Done-contracts (verify builders delivered what they committed to):
+      {done_contracts or "None (negotiation did not run)"}
+      If done-contracts are present, include done_contract_adherence in metadata:
+      For each builder's done-contract, check whether each committed item was delivered.
+
       Run THREE-PHASE verification:
 
       PHASE 1 — GUARD CHECK: Run all guard commands. ALL must pass.
@@ -494,7 +513,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
   Read task metadata for: verdict, failure_keys, prognosis, feature_metric, plan_adherence.
 
   ## Log integration verification to TSV (include phase and duration)
-  append_tsv_row(outer_cycle, "VERIFY", "integration", 0, feature_metric, guard_status, verdict, duration_s, "integrated verify")
+  append_tsv_row(outer_cycle, "VERIFY", "integration", 0, feature_metric, guard_status, verdict, duration_s, start_ts, end_ts, "integrated verify")
 
   if verdict == "PASS":
     Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Integration verify PASS."
@@ -632,6 +651,16 @@ while outer_cycle <= MAX_OUTER_CYCLES:
 
       {USER_JOURNEYS}
 
+      ## Partition Assignments (for subagent dispatch if requirements > 15)
+
+      {PARTITION_ASSIGNMENTS}
+      (Format: partition name -> builder name -> requirement list. The auditor uses
+      this to group requirements by partition when dispatching subagents.)
+
+      Total requirements: {TOTAL_REQUIREMENT_COUNT}
+      (If > 15: use Adaptive Audit Mode with per-partition subagents.
+       If <= 15: audit directly without subagents.)
+
       For each requirement and acceptance criterion:
       1. Grep to find implementation → Read the source file → classify REAL/STUB/MISSING
       2. Grep to find tests → Read the test file → classify THOROUGH/SHALLOW/MISSING
@@ -756,7 +785,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
   if final_verdict == "PASS":
     Tell user: "Review PASS (CI: {ci_checks.passed}/{ci_checks.total} green, audit: {deep_audit.summary.high_confidence} HIGH / {deep_audit.summary.medium_confidence} MEDIUM confidence, scores: {all_scores}). PR #{pr_number} ready for human review."
     ## Log final state to TSV
-    append_tsv_row(outer_cycle, "REVIEW", "review", 0, feature_metric, "pass", "PASS", duration_s, "review approved")
+    append_tsv_row(outer_cycle, "REVIEW", "review", 0, feature_metric, "pass", "PASS", duration_s, start_ts, end_ts, "review approved")
     Tell user final metrics summary if metric_mode == "metric":
       "Metric: {baseline_metric} → {feature_metric} ({metric_delta})"
     Invoke superpowers:finishing-a-development-branch
@@ -822,6 +851,10 @@ When aborting for any reason:
        "metric_mode": "metric",
        "baseline_metric": 72.3,
        "latest_metric": 85.1,
+       "done_contracts": {
+         "builder-1": "## Builder-1 Done Contract\n### Will Build\n...",
+         "builder-2": "## Builder-2 Done Contract\n..."
+       },
        "verifier_discovery": {
          "test_runner": "vitest",
          "test_command": "npm test",
@@ -909,7 +942,7 @@ The team and task list persist — only agents are swapped.
 Builder worktrees persist — fresh builders pick up where the old ones left off.
 
 ```
-REFRESH_AGENTS(cycle_number, reviewer_findings_by_builder, pr_number, baseline, partitions, contract_content, verifier_discovery):
+REFRESH_AGENTS(cycle_number, reviewer_findings_by_builder, pr_number, baseline, partitions, contract_content, verifier_discovery, done_contracts):
 
   ## 1. Shutdown all current agents in parallel
   Send shutdown_request to ALL builders, verifier, and reviewer simultaneously.
@@ -940,6 +973,7 @@ REFRESH_AGENTS(cycle_number, reviewer_findings_by_builder, pr_number, baseline, 
       - {MAX_OUTER_CYCLES} = MAX_OUTER_CYCLES
       - {ITERATION_BUDGET} = partition.iteration_budget or MAX_BUILDER_ITERATIONS
       - {PREVIOUS_FINDINGS_OR_EMPTY} = reviewer_findings_by_builder[partition.builder_name]
+      - {DONE_CONTRACT} = done_contracts[partition.builder_name] or "None"
       - {CONTRACT_CONTENT} = contract_content
       - {BUILDER_WORKTREE} = partition.builder_worktree (same worktree, fresh agent)
 
@@ -953,17 +987,18 @@ This provides visibility into the loop's progress and enables pattern recognitio
 
 Format:
 ```
-cycle	phase	builder	iteration	metric	guard	status	duration_s	description
-0	BASELINE	-	0	72.3	pass	baseline	5	initial state
-1	CONTRACT	-	0	null	pass	complete	45	contract negotiation
-1	BUILD	builder-1	1	75.0	pass	keep	30	implemented auth endpoints
-1	BUILD	builder-1	2	75.0	fail	revert	25	broke existing tests
-1	BUILD	builder-1	3	78.2	pass	keep	35	auth endpoints with fixed imports
-1	BUILD	builder-2	1	72.3	pass	keep	28	added UI components
-1	BUILD	builder-2	2	72.3	pass	discard	22	metric unchanged after refactor
-1	VERIFY	integration	0	80.5	pass	PASS	60	integrated verify
-1	REVIEW	review	0	80.5	pass	PASS	120	review approved
+cycle	phase	builder	iteration	metric	guard	status	duration_s	start_ts	end_ts	description
+0	BASELINE	-	0	72.3	pass	baseline	5	2026-03-29T14:00:00Z	2026-03-29T14:00:05Z	initial state
+1	CONTRACT	-	0	null	pass	complete	45	2026-03-29T14:00:05Z	2026-03-29T14:00:50Z	contract negotiation
+1	BUILD	builder-1	1	75.0	pass	keep	30	2026-03-29T14:00:50Z	2026-03-29T14:01:20Z	implemented auth endpoints
+1	BUILD	builder-1	2	75.0	fail	revert	25	2026-03-29T14:01:20Z	2026-03-29T14:01:45Z	broke existing tests
+1	VERIFY	integration	0	80.5	pass	PASS	60	2026-03-29T14:05:00Z	2026-03-29T14:06:00Z	integrated verify
+1	REVIEW	review	0	80.5	pass	PASS	120	2026-03-29T14:06:00Z	2026-03-29T14:08:00Z	review approved
 ```
+
+The `start_ts` and `end_ts` columns use ISO 8601 UTC format. The orchestrator captures
+`start_ts` by running `date -u +%Y-%m-%dT%H:%M:%SZ` before dispatching each phase task
+and `end_ts` after reading the completed task metadata.
 
 The `metric` column contains the feature metric value (from `## Verify Command`) when
 metric_mode == "metric", or a pass/fail count when metric_mode == "pass_fail".
@@ -972,7 +1007,7 @@ metric_mode == "metric", or a pass/fail count when metric_mode == "pass_fail".
 
 1. **Delegate everything.** Never read files, run commands, or analyze output. Agents do all work.
 2. **Tasks are the state machine.** Create tasks with dependencies, read task metadata for decisions.
-3. **Never skip phases.** ARCHITECT -> BUILD (keep/discard) -> INTEGRATE -> VERIFY (guard + feature + integration completeness) -> PUBLISH -> REVIEW. Always.
+3. **Never skip phases.** ARCHITECT -> CONTRACT_NEGOTIATION (cycle 1) -> BUILD (keep/discard) -> INTEGRATE -> VERIFY (guard + feature + integration completeness) -> PUBLISH -> REVIEW. Always.
 4. **Abort on NEEDS_HUMAN.** Immediately. No retries (except radical rethink for stagnant builders).
 5. **Escalate before aborting.** On builder stagnation: try radical rethink once before marking NEEDS_HUMAN.
 6. **Preserve resume state on abort.** Always write `.tim-loop-resume.json` with per-partition state and worktree paths.
@@ -980,6 +1015,7 @@ metric_mode == "metric", or a pass/fail count when metric_mode == "pass_fail".
 8. **Respect backward compatibility.** Single partition = single builder named "builder" with a single builder worktree, no scope restrictions.
 9. **Guard before feature.** Guard check failures (regressions) always trigger immediate revert. Feature metric changes trigger keep/discard.
 10. **Log everything to TSV.** Every builder iteration, every integration attempt, every verification result.
+11. **Typed message filtering.** After a builder's build task is completed, suppress status/progress/idle messages from that builder. ALWAYS process escalation messages (prefixed QUESTION:, NEEDS_HUMAN:, SCOPE_CONFLICT:, CONTRACT_ISSUE:) regardless of task status. Builders remain alive — if integration fails, assign a fix task to the existing builder.
 
 ## Progress Reporting
 

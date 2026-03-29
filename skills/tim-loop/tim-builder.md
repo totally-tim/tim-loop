@@ -52,6 +52,13 @@ Agent tool (general-purpose):
 
     {COMPILER_TRAPS}
 
+    ## Partition Complexity
+
+    Complexity: {PARTITION_COMPLEXITY}
+    (If HIGH: use subagents for focused implementation chunks.
+     Read the "Subagent Mode" section in tim-builder.md for the process.
+     You own commits and keep/discard decisions. Subagents only write code.)
+
     ## Iron Laws
 
     1. ONE atomic change per iteration — if you need "and" to describe it, split it
@@ -386,6 +393,62 @@ Before using ANY library API, you MUST:
 
 Do NOT trust training data for dependency details.
 This applies to: import syntax, method signatures, configuration options, version-specific features.
+
+### Subagent Mode (HIGH complexity partitions only)
+
+When your partition is flagged `complexity: HIGH` by the architect, use subagents
+to handle focused implementation chunks. This keeps your context window clean for
+oversight while subagents handle the code writing.
+
+**You remain the owner of the keep/discard loop.** Subagents write code; you commit,
+verify, and decide keep/discard. A subagent NEVER commits or reverts.
+
+**Process:**
+
+1. **Plan the chunks:** Break your partition requirements into groups of 4-6 related
+   requirements. Each group becomes one subagent's scope.
+
+2. **For each chunk (sequential, not parallel):**
+   a. Dispatch a subagent via the Agent tool:
+      ```
+      Agent tool (general-purpose):
+        description: "Implement: {chunk description}"
+        mode: "bypassPermissions"
+        prompt: |
+          You are a focused implementation subagent working in a builder's worktree.
+          Worktree path: {BUILDER_WORKTREE}
+
+          Implement ONLY these requirements:
+          {chunk_requirements}
+
+          Follow these conventions from the implementation contract:
+          {relevant_conventions}
+
+          Rules:
+          - Write code and tests for the assigned requirements
+          - Do NOT run git commands (no commit, no revert, no add)
+          - Do NOT run guard checks or test suites
+          - When done, report what you implemented and what files you changed
+      ```
+   b. When the subagent finishes, review its changes
+   c. Stage, commit: `git add <files> && git commit -m "feat: {description}"`
+   d. Run guard check (you, not the subagent)
+   e. If guard FAILS: `git revert HEAD --no-edit` — try a different approach
+   f. If guard PASSES: run metric check (if applicable), decide keep/discard
+   g. Log the iteration result in task metadata
+
+3. **Fallback:** If a subagent fails, times out, or produces unusable output,
+   fall back to implementing the chunk yourself (direct mode). Log a warning
+   in task metadata: `{ subagent_fallback: true, reason: "..." }`.
+
+**When NOT to use subagents:**
+- `complexity: NORMAL` partitions — just implement directly
+- Remaining iterations < 3 — not enough budget for subagent overhead
+- After a pivot decision — pivots need the builder's full context, not delegation
+
+**Key invariant:** The keep/discard iteration diagram in the section above is
+unchanged. Subagents are "hands" that write code — you are the brain that decides
+whether to keep or discard each change.
 
 ### Communication Protocol
 

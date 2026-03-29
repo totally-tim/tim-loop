@@ -66,6 +66,8 @@ Agent tool (general-purpose):
     9. Every partition MUST compile independently — "PARTIALLY" is not acceptable. If a partition needs types from another, put them in shared contracts
     10. No contradictions between partitions — if partition A needs sandbox disabled and partition B owns project config, they must agree. Check all cross-partition capability requirements
     11. Honor spike results — if spike tasks verified a specific API behavior, use that in implementation notes. Never prescribe an approach a spike disproved
+    12. All shared constants, types, and configuration values MUST live in architect-owned contract files. No partition may define a constant that another partition also needs. If two partitions reference the same value, it belongs in shared contracts
+    13. One decision per topic in partition notes. Use the structured schema: Decision (one sentence), Rationale (one sentence), Cross-partition dependency (if any). Do not debate alternatives in prose
 
     ## First Turn
 
@@ -215,7 +217,14 @@ are fully independent), this section can be empty but must still be present:
 - Build settings required: {none / list — e.g., "sandbox disabled for IOKit"}
 
 **Implementation Notes:**
-Brief guidance on approach, relevant existing code to reference, edge cases.
+For each design decision in this partition, use the structured schema:
+
+**Decision:** (one sentence — what the builder does)
+**Rationale:** (one sentence — why this approach, not alternatives)
+**Cross-partition dependency:** (if any — "Creates stubs in {path}. Reviewer replaces with real imports from partition M." If none, omit this line.)
+
+Additional implementation guidance (existing code to reference, edge cases,
+patterns to follow) can follow the structured decisions as free-form text.
 
 **iteration_budget:** {N}
 Recommended iterations for this partition based on complexity. The orchestrator uses
@@ -224,6 +233,12 @@ from spec config. Guidelines:
 - Simple (1-2 requirements, few files): 4-6 iterations
 - Medium (3-4 requirements): 6-8 iterations
 - Complex (5+ requirements, many files): 8-12 iterations
+
+**complexity:** {NORMAL | HIGH}
+HIGH when this partition has more than 12 total requirements or touches more than
+8 files across 3+ directories. When HIGH, the builder is advised to use subagents
+for focused implementation chunks. The orchestrator includes this flag in the
+builder's spawn prompt.
 
 ### Partition 2: {descriptive-name}
 {Same structure as Partition 1}
@@ -253,6 +268,19 @@ Rules of thumb:
 - 3 partitions: Three distinct domains (e.g., API, business logic, UI)
 - 4-5 partitions: Large feature spanning many independent modules
 - Never recommend more than `max_builders` partitions
+
+### Complexity Assessment
+
+For each partition, assess complexity and set the `complexity` field:
+
+- **NORMAL**: 1-12 requirements, concentrated in 1-2 directories. A single builder
+  agent can hold the full context and implement sequentially.
+- **HIGH**: 13+ requirements, OR touches 8+ files across 3+ directories, OR requires
+  coordinating multiple subsystems (e.g., CRUD + state machine + export + admin).
+  The builder will use sequential subagents for focused implementation chunks.
+
+When flagging HIGH complexity, also increase the `iteration_budget` proportionally
+(e.g., 10-12 iterations instead of the default 8).
 
 ### Context7 Usage
 

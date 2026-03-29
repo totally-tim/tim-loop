@@ -17,6 +17,7 @@ Phase 2: FEATURE VERIFICATION (new functionality — tracked with metric)
   ├── Tier 2: platform-detected checks (only if Tier 1 passes)
   ├── Tier 3: spec override checks (only if Tier 1 passes)
   ├── Plan adherence check
+  ├── Defensive review (input validation, security, atomicity, data consistency)
   └── Metric extraction (if metric_mode == "metric")
   └── If Phase 2 FAILs → skip Phase 3
 
@@ -304,6 +305,78 @@ per-requirement evidence. This is the primary defense against incomplete impleme
 - **P0 `MISSING` or `IMPL_ONLY`** → FAIL with failure_key `plan/requirement-missing:{requirement-slug}`
 - **P1 `MISSING`** → Flag but don't FAIL (report as non-blocking)
 - **P2 `MISSING`** → Note as observation (acceptable if iterations ran low)
+
+### Defensive Review (after plan adherence)
+
+After plan adherence passes, review the implementation for robustness patterns the
+spec doesn't explicitly test. This catches the class of issues that external code
+review tools (GitHub AI review, etc.) typically find but internal loop agents miss.
+
+**Scope:** Flag issues in new/modified code AND in existing code that is newly
+reachable via data paths introduced by the change. Example: new code passes user
+input to an existing CSV serializer that doesn't escape formula characters — flag
+the serializer because the new data path makes it unsafe.
+
+**Judgment rule:** Only flag patterns that create a user-visible failure mode.
+Do not flag theoretical risks in code paths that are never reached with untrusted input.
+
+**Four categories:**
+
+#### 1. Input Validation (at API/system boundaries)
+
+Check every new or modified endpoint, handler, or function that accepts external input:
+
+- Are all user-supplied parameters validated before use?
+- Are type conversions explicit (not relying on language coercion)?
+- Are boundary values handled? (empty string, null, max length, negative numbers, zero)
+- Are enum/set values validated against an allowed list?
+- For PATCH/partial updates: are field existence checks in place?
+
+Failure key: `defense/validation/{endpoint-or-function}:{issue}`
+
+#### 2. Security Patterns
+
+Check new code AND existing sinks reached via new data paths:
+
+- **CSV/formula injection:** User data written to CSV cells starting with `=`, `+`, `-`, `@`, `\t`, `\r`
+- **SQL injection:** String concatenation or template literals in SQL queries (vs parameterized)
+- **XSS:** User input rendered in HTML without escaping or sanitization
+- **Command injection:** User input interpolated into shell commands
+- **Path traversal:** User input used in file paths without normalization/validation
+- **Mass assignment:** Accepting all fields from request body without allowlist
+
+Failure key: `defense/security/{pattern}:{file}:{line}`
+
+#### 3. Atomicity & Error Handling
+
+Check new code that performs multi-step mutations:
+
+- Are multi-step database mutations wrapped in transactions?
+- On partial failure, is state rolled back or left inconsistent? (orphaned records, half-created resources)
+- Are error responses specific (not generic 500s with no context)?
+- Are external API calls retried with backoff on transient failures?
+- Are file operations atomic (write-to-temp-then-rename, not write-in-place)?
+
+Failure key: `defense/atomicity/{operation}:{issue}`
+
+#### 4. Data Consistency
+
+Check for patterns that lead to divergent state:
+
+- Are constants/configuration values defined in exactly one place? (no duplicate definitions across files)
+- After a mutation, are caches or derived state invalidated?
+- For concurrent access patterns, are race conditions handled? (optimistic locking, upserts, etc.)
+- For partial updates: is the updated state consistent with invariants?
+
+Failure key: `defense/consistency/{resource}:{issue}`
+
+**Failure keys:** All defensive findings use the `defense/` prefix. The full taxonomy
+(key formats, routing rules, severity levels) is defined in `tim-verifier.md` under
+"Defensive review keys" — that is the single source of truth.
+
+**Reporting:** Include defensive findings in the `failure_keys` array alongside
+plan adherence and other Phase 2 findings. Route by file ownership (same as existing
+keys). For cross-partition issues, route to the builder that introduced the new data path.
 
 ## Phase 3: Integration Completeness
 

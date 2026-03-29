@@ -47,6 +47,7 @@ Agent tool (general-purpose):
     8. Include a human-readable compliance_report in metadata for the PR description
     9. Read tim-evaluation-calibration.md on your first turn for scoring criteria and calibration
     10. Score every quality dimension 1-10 during the deep audit. No dimension below 6 is acceptable.
+    11. When using subagents (>15 requirements): you own cross-partition checks. Subagents handle per-partition deep reads. If a subagent fails, fall back to direct audit for that partition.
 
     ## First Turn
 
@@ -119,6 +120,72 @@ skip integration wiring checks entirely and mark all as `WIRED` by default.
 **Step 6 — Determine per-requirement verdict:**
 - `PASS`: confidence is HIGH or MEDIUM (for P1/P2 only — P0 requires HIGH or MEDIUM with test != MISSING)
 - `FAIL`: confidence is LOW, OR (priority is P0 and test_status is MISSING)
+
+### Adaptive Audit Mode
+
+When total requirements (requirements + acceptance criteria) exceed 15, use
+subagent dispatch for parallel deep-reading. Below 15, audit directly (existing process above).
+
+**Subagent dispatch process:**
+
+1. **Count total requirements.** Include both `## Requirements` and `## Acceptance Criteria`.
+   If total <= 15, skip this section — audit directly using the Deep Audit Process above.
+
+2. **Group by partition.** Using the architect contract's `## Partitions` section,
+   assign each requirement to its owning partition.
+
+3. **Dispatch one subagent per partition:**
+   ```
+   Agent tool (general-purpose):
+     description: "Audit partition: {partition_name}"
+     mode: "bypassPermissions"
+     prompt: |
+       You are an audit subagent. Read source files in the integration worktree
+       and classify implementations and tests for the assigned requirements.
+
+       Integration worktree: {INTEGRATION_WORKTREE}
+
+       ## Requirements to Audit
+       {partition_requirements}
+
+       ## Classification Rubric
+
+       For each requirement:
+       1. Grep for implementation (function names, route paths, component names)
+       2. Read the source file. Classify:
+          - REAL: Contains actual business logic (conditionals, transforms, API calls, error handling)
+          - STUB: Empty body, TODO, hardcoded mock, delegates to unimplemented function
+          - MISSING: Not found after multiple search terms
+       3. Grep for tests. Read the test file. Classify:
+          - THOROUGH: Tests assert meaningful behavior, multiple assertions, happy + error paths
+          - SHALLOW: Only checks existence/truthiness, mocks everything, happy path only
+          - MISSING: No test found
+       4. For each, provide: impl_file, impl_snippet (2-3 lines), test_file, test_assessment
+
+       Report structured results as your final output — one entry per requirement.
+   ```
+
+4. **Wait for all subagents.** Collect results.
+
+5. **Handle failures:** If any subagent fails or times out, fall back to auditing
+   that partition's requirements directly (using the Deep Audit Process above).
+   Log: `{ subagent_fallback: true, partition: "{name}", reason: "..." }`.
+
+6. **Synthesize:** Merge all subagent results into a unified `deep_audit` array.
+   Validate each entry: if a subagent classified something as REAL but the snippet
+   looks like a stub (TODO, empty body, pass-through), override to STUB.
+
+7. **Run cross-partition checks yourself (do NOT delegate these):**
+   - Contract Usage Verification (are shared types imported by consumers?)
+   - Entry-Point Reachability Tracing (is the feature reachable from the app entry?)
+   - App Entry Point Wiring Audit (for multi-partition builds)
+   - Connection Audit (are cross-partition seams wired per the connections map?)
+
+8. **Score and report** using the same metadata format as the direct audit process.
+
+**Why cross-partition checks stay centralized:** Subagents audit requirements within
+partition boundaries. Cross-partition integration (wiring, reachability, contract usage)
+requires seeing across partition boundaries — only the auditor has the full picture.
 
 ### Contract Usage Verification
 
