@@ -332,7 +332,7 @@ Check every new or modified endpoint, handler, or function that accepts external
 - Are enum/set values validated against an allowed list?
 - For PATCH/partial updates: are field existence checks in place?
 
-Failure key: `defense/validation/{endpoint-or-function}:{issue}`
+Failure key: see `defense/validation/*` in tim-verifier.md
 
 #### 2. Security Patterns
 
@@ -345,7 +345,7 @@ Check new code AND existing sinks reached via new data paths:
 - **Path traversal:** User input used in file paths without normalization/validation
 - **Mass assignment:** Accepting all fields from request body without allowlist
 
-Failure key: `defense/security/{pattern}:{file}:{line}`
+Failure key: see `defense/security/*` in tim-verifier.md
 
 #### 3. Atomicity & Error Handling
 
@@ -357,7 +357,7 @@ Check new code that performs multi-step mutations:
 - Are external API calls retried with backoff on transient failures?
 - Are file operations atomic (write-to-temp-then-rename, not write-in-place)?
 
-Failure key: `defense/atomicity/{operation}:{issue}`
+Failure key: see `defense/atomicity/*` in tim-verifier.md
 
 #### 4. Data Consistency
 
@@ -368,7 +368,7 @@ Check for patterns that lead to divergent state:
 - For concurrent access patterns, are race conditions handled? (optimistic locking, upserts, etc.)
 - For partial updates: is the updated state consistent with invariants?
 
-Failure key: `defense/consistency/{resource}:{issue}`
+Failure key: see `defense/consistency/*` in tim-verifier.md
 
 **Failure keys:** All defensive findings use the `defense/` prefix. The full taxonomy
 (key formats, routing rules, severity levels) is defined in `tim-verifier.md` under

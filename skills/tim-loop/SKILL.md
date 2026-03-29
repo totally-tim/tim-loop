@@ -214,7 +214,7 @@ is based on verified behavior, not assumptions.
    If acceptable: approve (approve: true).
 
 4. Read the approved contract. Extract:
-   - `partitions` — array of { name, files, requirements, dependencies, iteration_budget }
+   - `partitions` — array of { name, files, requirements, dependencies, iteration_budget, complexity }
    - `contract_content` — full text of .tim-loop-contract.md
    - `partition_count` — number of partitions
    - `partition_assignments` — formatted string mapping each partition to its requirements (for auditor subagent dispatch)
@@ -654,8 +654,9 @@ while outer_cycle <= MAX_OUTER_CYCLES:
       ## Partition Assignments (for subagent dispatch if requirements > 15)
 
       {PARTITION_ASSIGNMENTS}
-      (Format: partition name -> builder name -> requirement list. The auditor uses
-      this to group requirements by partition when dispatching subagents.)
+      (Format: partition name -> builder name -> requirement list + applicable acceptance criteria.
+      The auditor uses this to group requirements by partition when dispatching subagents.
+      Acceptance criteria that span multiple partitions are included in each relevant partition.)
 
       Total requirements: {TOTAL_REQUIREMENT_COUNT}
       (If > 15: use Adaptive Audit Mode with per-partition subagents.
@@ -695,8 +696,20 @@ while outer_cycle <= MAX_OUTER_CYCLES:
           builder: (route by file path of requirement.impl_file)
         })
 
+  ## Check done-contract adherence from verify metadata
+  done_contract_failures = []
+  if verify_task_metadata.done_contract_adherence:
+    for item in verify_task_metadata.done_contract_adherence:
+      if item.status == "NOT_DELIVERED":
+        done_contract_failures.append({
+          severity: "BLOCKING",
+          category: "done-contract-breach",
+          description: "Builder {item.builder} committed '{item.committed}' but did not deliver. Evidence: {item.evidence}",
+          builder: item.builder
+        })
+
   ## Combine verdicts: both reviewer AND auditor must pass, AND all scores must be ≥ 6
-  combined_findings = reviewer_findings + auditor_findings
+  combined_findings = reviewer_findings + auditor_findings + done_contract_failures
 
   ## Quality Score Gate — check verifier and auditor scores against thresholds
   ## Read verifier quality_scores from the VERIFY phase metadata
@@ -996,9 +1009,9 @@ cycle	phase	builder	iteration	metric	guard	status	duration_s	start_ts	end_ts	des
 1	REVIEW	review	0	80.5	pass	PASS	120	2026-03-29T14:06:00Z	2026-03-29T14:08:00Z	review approved
 ```
 
-The `start_ts` and `end_ts` columns use ISO 8601 UTC format. The orchestrator captures
-`start_ts` by running `date -u +%Y-%m-%dT%H:%M:%SZ` before dispatching each phase task
-and `end_ts` after reading the completed task metadata.
+The `start_ts` and `end_ts` columns use ISO 8601 UTC format. The orchestrator records
+`start_ts` when creating each phase task and `end_ts` when reading the completed task
+metadata. Timestamps are captured from the system clock, not by running shell commands.
 
 The `metric` column contains the feature metric value (from `## Verify Command`) when
 metric_mode == "metric", or a pass/fail count when metric_mode == "pass_fail".

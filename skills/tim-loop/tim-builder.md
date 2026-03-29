@@ -405,8 +405,9 @@ verify, and decide keep/discard. A subagent NEVER commits or reverts.
 
 **Process:**
 
-1. **Plan the chunks:** Break your partition requirements into groups of 4-6 related
-   requirements. Each group becomes one subagent's scope.
+1. **Plan the chunks:** Each subagent implements ONE requirement (or a small group of
+   2-3 tightly coupled requirements that share the same files). Keep chunks small so
+   each commit is a genuine atomic change in the keep/discard loop.
 
 2. **For each chunk (sequential, not parallel):**
    a. Dispatch a subagent via the Agent tool:
@@ -424,8 +425,12 @@ verify, and decide keep/discard. A subagent NEVER commits or reverts.
           Follow these conventions from the implementation contract:
           {relevant_conventions}
 
+          File scope (ONLY modify these files): {PARTITION_FILES}
+          Shared contract files are READ-ONLY — do not modify them.
+
           Rules:
           - Write code and tests for the assigned requirements
+          - ONLY create or modify files within the file scope above
           - Do NOT run git commands (no commit, no revert, no add)
           - Do NOT run guard checks or test suites
           - When done, report what you implemented and what files you changed
