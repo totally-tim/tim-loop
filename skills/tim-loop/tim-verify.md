@@ -57,9 +57,9 @@ When running baseline verification (before builders make changes):
   The orchestrator should surface metric warnings to the user before starting the build.
 - Do NOT run Tier 2/3 (no changes to verify yet)
 - **Browser tool detection (baseline):** During baseline verification, detect whether
-  browser tools are available (check for `~/.claude/skills/playwright-cli/`
-  or `mcp__claude-in-chrome__*` in CLAUDE.md). Record in discovery metadata:
-  `browser_tool: "playwright-cli" | "claude-in-chrome" | null`.
+  browser tools are available (check for `mcp__claude-in-chrome__*` MCP tools
+  or `~/.claude/skills/playwright-cli/`). Record in discovery metadata:
+  `browser_tool: "claude-in-chrome" | "playwright-cli" | null`.
   If the spec has `## User Journeys` with frontend components and `browser_tool` is null,
   report immediately as a BLOCKING finding — do not wait until Phase 3d.
 - Store results in task metadata: `{ baseline_failures: [...], baseline_metric: N, metric_sanity: "ok"|"warning: ..." }`
@@ -175,12 +175,26 @@ changed), run interactive browser verification for visual correctness.
 
 **Tool selection priority** (use the first available):
 
-1. **`playwright-cli`** — Preferred headless browser with snapshot-based validation.
-2. **`mcp__claude-in-chrome__*`** — If explicitly configured in the project's CLAUDE.md.
+1. **`mcp__claude-in-chrome__*`** — Native Claude browser tools. Auto-detected when the
+   MCP server is connected (check via tool availability). Preferred for real browser
+   interaction with full rendering, DevTools access, and network inspection.
+2. **`playwright-cli`** — Headless browser with snapshot-based validation. Use when
+   `~/.claude/skills/playwright-cli/` exists and Chrome MCP is not available.
 
-**Detection:** Check for `playwright-cli` skill at `~/.claude/skills/playwright-cli/`.
-If not available, check for `mcp__claude-in-chrome__*` in the project's CLAUDE.md.
-If neither is available, skip interactive browser verification and note it in the verify report.
+**Detection:**
+- Check if `mcp__claude-in-chrome__*` tools are available (they're auto-connected as MCP tools).
+- If not available, check for `playwright-cli` skill at `~/.claude/skills/playwright-cli/`.
+- If neither is available, skip interactive browser verification and note it in the verify report.
+
+**When using `mcp__claude-in-chrome__*` for interactive browser verification:**
+1. Start the dev server if not running
+2. `mcp__claude-in-chrome__tabs_create_mcp` to open a new tab
+3. `mcp__claude-in-chrome__navigate` to the affected page
+4. `mcp__claude-in-chrome__read_page` to inspect page content and structure
+5. Verify expected elements are present and visually correct
+6. `mcp__claude-in-chrome__form_input` and click actions to test interactive flows
+7. `mcp__claude-in-chrome__computer` with screenshot action for evidence
+8. `mcp__claude-in-chrome__read_console_messages` to check for errors
 
 **When using `playwright-cli` for interactive browser verification:**
 1. Start the dev server if not running
@@ -229,8 +243,8 @@ actionable feedback sooner.
 7. **Save screenshots** as evidence with descriptive names (e.g., `smoke-{page-name}.png`)
 
 **Tool selection:** Same priority as Tier 2 interactive verification:
-1. `playwright-cli` — preferred
-2. `mcp__claude-in-chrome__*` — if configured in project CLAUDE.md
+1. `mcp__claude-in-chrome__*` — preferred (native Claude browser tools)
+2. `playwright-cli` — fallback
 
 **Timeout:** If the dev server hasn't become ready within 30 seconds, treat as "fails to start"
 and fall back to static analysis scoring. Do not block indefinitely.
@@ -526,8 +540,8 @@ perspective, through actual navigation.
    verifying response status codes and bodies at each checkpoint.
 
 **Browser tool selection:** Same priority as Phase 2 interactive verification:
-1. `playwright-cli` — preferred
-2. `mcp__claude-in-chrome__*` — if configured in project CLAUDE.md
+1. `mcp__claude-in-chrome__*` — preferred (native Claude browser tools)
+2. `playwright-cli` — fallback
 
 **Failure key format:** `integration/journey/{journey-name}:{step-number}:{description}`
 
@@ -631,7 +645,7 @@ Phase 3 can be partially skipped when not applicable:
   **However:** If the spec has `## User Journeys` AND the feature has frontend components
   (detected by changes in web UI directories like `apps/web/`, `src/pages/`, `src/components/`,
   `src/app/`, or presence of a dev server command), browser verification is **required**.
-  If no browser tool is available (`playwright-cli` or `mcp__claude-in-chrome__*`),
+  If no browser tool is available (`mcp__claude-in-chrome__*` or `playwright-cli`),
   report this as a **BLOCKING** finding with:
   - failure_key: `integration/journey/browser-tool-unavailable`
   - prognosis: `NEEDS_HUMAN`

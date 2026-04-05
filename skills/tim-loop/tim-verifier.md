@@ -103,7 +103,7 @@ TaskUpdate:
       typecheck_command: "npx tsc --noEmit",
       build_command: "npm run build",
       frameworks: ["vitest", "eslint", "typescript"],
-      browser_tool: "playwright-cli" | "claude-in-chrome" | null
+      browser_tool: "claude-in-chrome" | "playwright-cli" | null
     }
   }
 ```
@@ -233,8 +233,8 @@ When web UI changes are detected, run interactive browser verification.
 See `tim-verify.md` for the full tool selection priority and usage instructions.
 
 **Tool selection priority:**
-1. **`playwright-cli`** — preferred when `~/.claude/skills/playwright-cli/` exists
-2. **`mcp__claude-in-chrome__*`** — if explicitly configured in project CLAUDE.md
+1. **`mcp__claude-in-chrome__*`** — preferred (native Claude browser tools, auto-detected)
+2. **`playwright-cli`** — fallback when `~/.claude/skills/playwright-cli/` exists
 
 **Always respect the project's CLAUDE.md** — if it specifies a preferred browser tool,
 use that regardless of the priority order above.
