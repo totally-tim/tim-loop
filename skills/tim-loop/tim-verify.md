@@ -57,9 +57,9 @@ When running baseline verification (before builders make changes):
   The orchestrator should surface metric warnings to the user before starting the build.
 - Do NOT run Tier 2/3 (no changes to verify yet)
 - **Browser tool detection (baseline):** During baseline verification, detect whether
-  browser tools are available (check for `~/.claude/skills/gstack/`, `~/.claude/skills/playwright-cli/`,
+  browser tools are available (check for `~/.claude/skills/playwright-cli/`
   or `mcp__claude-in-chrome__*` in CLAUDE.md). Record in discovery metadata:
-  `browser_tool: "gstack" | "playwright-cli" | "claude-in-chrome" | null`.
+  `browser_tool: "playwright-cli" | "claude-in-chrome" | null`.
   If the spec has `## User Journeys` with frontend components and `browser_tool` is null,
   report immediately as a BLOCKING finding — do not wait until Phase 3d.
 - Store results in task metadata: `{ baseline_failures: [...], baseline_metric: N, metric_sanity: "ok"|"warning: ..." }`
@@ -175,26 +175,12 @@ changed), run interactive browser verification for visual correctness.
 
 **Tool selection priority** (use the first available):
 
-1. **`/browse` (gstack)** — Preferred when gstack is installed. Fast headless browser
-   with screenshot, interaction, diffing, and element assertion. Use the `/browse` skill.
-2. **`playwright-cli`** — Fallback when gstack is not available. Superpowers headless
-   browser with snapshot-based validation.
-3. **`mcp__claude-in-chrome__*`** — Only if explicitly configured in the project's
-   CLAUDE.md. Not used by default.
+1. **`playwright-cli`** — Preferred headless browser with snapshot-based validation.
+2. **`mcp__claude-in-chrome__*`** — If explicitly configured in the project's CLAUDE.md.
 
-**Detection:** Check if gstack skills are available by looking for `~/.claude/skills/gstack/`.
-If present, use `/browse`. Otherwise, check for `playwright-cli` skill at
-`~/.claude/skills/playwright-cli/`. If neither is available, skip interactive browser
-verification and note it in the verify report.
-
-**When using `/browse` (gstack) for interactive browser verification:**
-1. Start the dev server if not running
-2. Navigate to affected pages
-3. Take screenshots of each affected page/component
-4. Verify expected elements are present and visually correct
-5. Test interactive flows (click, fill, navigate) for correct behavior
-6. Diff before/after states when applicable
-7. Save screenshot evidence with descriptive filenames
+**Detection:** Check for `playwright-cli` skill at `~/.claude/skills/playwright-cli/`.
+If not available, check for `mcp__claude-in-chrome__*` in the project's CLAUDE.md.
+If neither is available, skip interactive browser verification and note it in the verify report.
 
 **When using `playwright-cli` for interactive browser verification:**
 1. Start the dev server if not running
@@ -207,8 +193,7 @@ verification and note it in the verify report.
 8. `playwright-cli close`
 
 **Project CLAUDE.md overrides:** If the project's CLAUDE.md specifies a preferred browser
-tool (e.g., "use /browse for all web browsing"), respect that directive regardless of
-the priority order above.
+tool, respect that directive regardless of the priority order above.
 
 ### Interactive Smoke Check (between Tier 2 and Tier 3)
 
@@ -244,9 +229,8 @@ actionable feedback sooner.
 7. **Save screenshots** as evidence with descriptive names (e.g., `smoke-{page-name}.png`)
 
 **Tool selection:** Same priority as Tier 2 interactive verification:
-1. `/browse` (gstack) — preferred
-2. `playwright-cli` — fallback
-3. Project CLAUDE.md overrides take precedence
+1. `playwright-cli` — preferred
+2. `mcp__claude-in-chrome__*` — if configured in project CLAUDE.md
 
 **Timeout:** If the dev server hasn't become ready within 30 seconds, treat as "fails to start"
 and fall back to static analysis scoring. Do not block indefinitely.
@@ -542,9 +526,8 @@ perspective, through actual navigation.
    verifying response status codes and bodies at each checkpoint.
 
 **Browser tool selection:** Same priority as Phase 2 interactive verification:
-1. `/browse` (gstack) — preferred
-2. `playwright-cli` — fallback
-3. Project CLAUDE.md overrides take precedence
+1. `playwright-cli` — preferred
+2. `mcp__claude-in-chrome__*` — if configured in project CLAUDE.md
 
 **Failure key format:** `integration/journey/{journey-name}:{step-number}:{description}`
 
@@ -648,11 +631,11 @@ Phase 3 can be partially skipped when not applicable:
   **However:** If the spec has `## User Journeys` AND the feature has frontend components
   (detected by changes in web UI directories like `apps/web/`, `src/pages/`, `src/components/`,
   `src/app/`, or presence of a dev server command), browser verification is **required**.
-  If no browser tool is available (`/browse`, `playwright-cli`, or `mcp__claude-in-chrome__*`),
+  If no browser tool is available (`playwright-cli` or `mcp__claude-in-chrome__*`),
   report this as a **BLOCKING** finding with:
   - failure_key: `integration/journey/browser-tool-unavailable`
   - prognosis: `NEEDS_HUMAN`
-  - message: "Frontend feature requires browser verification but no browser tool is available. Install /browse (gstack) or playwright-cli."
+  - message: "Frontend feature requires browser verification but no browser tool is available. Install playwright-cli."
   The orchestrator must surface this to the user immediately, not at the end of the cycle.
 - **3e (protocol consistency):** Skipped if the architect contract has no `## Shared Contracts`
   section (single-partition features). Always runs for multi-partition builds.

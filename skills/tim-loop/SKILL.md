@@ -277,7 +277,7 @@ TaskCreate:
           typecheck_command: 'npx tsc --noEmit',
           build_command: 'npm run build',
           frameworks: ['vitest', 'eslint', 'typescript'],
-          browser_tool: 'gstack'  // or 'playwright-cli' | 'claude-in-chrome' | null
+          browser_tool: 'playwright-cli'  // or 'claude-in-chrome' | null
         }
       }"
   owner: verifier
@@ -900,7 +900,7 @@ When aborting for any reason:
          "typecheck_command": "npx tsc --noEmit",
          "build_command": "npm run build",
          "frameworks": ["vitest", "eslint", "typescript"],
-         "browser_tool": "gstack"
+         "browser_tool": "playwright-cli"
        },
        "partitions": [
          {
@@ -1082,11 +1082,9 @@ One line per phase transition:
 | superpowers:verification-before-completion | builders | Self-check before handoff |
 | superpowers:requesting-code-review | reviewer | Review methodology foundation |
 | superpowers:finishing-a-development-branch | orchestrator | Final cleanup after success |
-| /browse (gstack) | verifier | Interactive browser verification (preferred) |
-| playwright-cli | verifier | Interactive browser verification (fallback) |
+| playwright-cli | verifier | Interactive browser verification (preferred) |
 | Context7 MCP | all agents | Verify dependency APIs |
 
-**Browser tool selection:** The verifier uses `/browse` (gstack) when available, falls back to
-`playwright-cli`, and respects the project's CLAUDE.md if it specifies a preferred tool.
-Automated E2E test suites (Playwright tests, Cypress, etc.) are always run directly
-regardless of which interactive browser tool is used.
+**Browser tool selection:** The verifier uses `playwright-cli` when available, falls back to
+`mcp__claude-in-chrome__*` if configured in the project's CLAUDE.md.
+Automated E2E test suites (Playwright tests, Cypress, etc.) are always run directly.

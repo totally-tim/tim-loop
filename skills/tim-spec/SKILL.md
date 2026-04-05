@@ -12,62 +12,15 @@ effort: max
 
 Generates a structured feature spec by wrapping the brainstorming skill with a standardized output format. The resulting spec is the input to `/tim-loop`.
 
-Supports two input modes:
-- **Default (brainstorming):** Guided brainstorming from scratch via `superpowers:brainstorming`
-- **gstack import:** Detects and consumes existing gstack planning artifacts, then supplements with codebase exploration
-
 ## Process
 
-### Step 0: Check for gstack Planning Artifacts
-
-Before brainstorming, check for existing gstack planning output:
-
-1. **Detect the project slug:** Derive from the current git repo name or working directory name.
-2. **Scan for artifacts:** Look in `~/.gstack/projects/{slug}/` for:
-   - Design docs: `*-design-*.md` (most recent by timestamp)
-   - Test plans: `*-test-plan-*.md` (most recent by timestamp)
-3. **If artifacts found:** Ask the user:
-   > "I found gstack planning artifacts for this project:
-   > - Design doc: `{filename}` ({date})
-   > - Test plan: `{filename}` ({date})
-   >
-   > Would you like me to import these as the foundation for the spec, or start fresh with brainstorming?"
-
-4. **If user chooses import:** Go to Step 1a (gstack import mode).
-5. **If user declines or no artifacts found:** Go to Step 1b (brainstorming mode).
-
-### Step 1a: gstack Import Mode
-
-Read the gstack design doc and test plan. Extract and transform:
-
-| gstack Source Section | → | Spec Target Section |
-|---|---|---|
-| Recommended Approach + Description | → | `## Goal` (distill to one sentence) |
-| Implementation Sequence items | → | `## Requirements` — present to user for `[P0]`/`[P1]`/`[P2]` tagging |
-| Success Criteria | → | `## Acceptance Criteria` (rewrite as testable conditions) |
-| Test Plan: Key Interactions + Edge Cases | → | `## Test Strategy` (formalize with test types/frameworks) |
-| Constraints + Premises + Risk annotations | → | `## Risk Assessment` |
-| Open Questions | → | `## Open Questions` (carry forward) |
-| Out of Scope / Scope boundaries | → | `## Out of Scope` |
-
-**After extraction:**
-- Present the extracted sections to the user for review and priority assignment.
-- Ask clarifying questions for anything that didn't map cleanly.
-- The user may adjust, add, or remove items.
-- Then proceed to Step 2 (codebase exploration) — gstack provides design philosophy but not file-level architecture.
-
-**Deriving Metric, Guards, and Verify Command from gstack:**
-- If the test plan references specific test commands or coverage targets, use those to populate `## Metric` and `## Verify Command`.
-- If the design doc mentions constraints or invariants, use those to populate `## Guards`.
-- If these can't be derived, ask the user or leave as optional (tim-loop works without them, but is more effective with them).
-
-### Step 1b: Brainstorming Mode (Default)
+### Step 1: Brainstorming
 
 Invoke `superpowers:brainstorming` to explore the idea with the user. Follow the brainstorming process exactly (one question at a time, propose approaches, present design, get approval).
 
-### Step 1b-2: Scope Amplification
+### Step 1b: Scope Amplification
 
-After brainstorming (or gstack import review) completes and before user journeys, push the user to think bigger:
+After brainstorming completes and before user journeys, push the user to think bigger:
 
 1. **Ask the 10/10 question:**
    > "What would make this a 10/10 feature — not just functional, but polished and complete?
@@ -91,7 +44,7 @@ After brainstorming (or gstack import review) completes and before user journeys
 
 ### Step 1c: Co-create User Journeys with the User
 
-**This step runs after brainstorming/import review, before codebase exploration.**
+**This step runs after brainstorming, before codebase exploration.**
 
 User journeys are the top-down integration tests that prevent the "green tests, broken app"
 problem. They must be co-created with the user — not auto-generated — because only the user
@@ -135,10 +88,6 @@ knows the expected navigation paths and product behavior.
      2. Action: Send 1 more POST request
         Checkpoint: Returns 429 with Retry-After header
    ```
-
-6. **For gstack import mode:** also extract user journeys from the test plan's
-   "Key Interactions to Verify" and "Critical Paths" sections, then present
-   to the user for review and refinement.
 
 ### Step 2: Explore the Codebase
 
@@ -236,7 +185,7 @@ features that only use internal APIs or don't display fetched data.
 
 ### Step 3: Generate Spec
 
-Convert the brainstorming design (or gstack import) into the standardized spec format below. Every required section must be filled — if information is missing, ask the user before generating.
+Convert the brainstorming design into the standardized spec format below. Every required section must be filled — if information is missing, ask the user before generating.
 
 ### Step 4: Validate Spec
 
@@ -261,11 +210,6 @@ Recommended but not required:
 ### Step 5: Save Spec
 
 Write to `docs/specs/YYYY-MM-DD-<feature-slug>.md` where `<feature-slug>` is a kebab-case name derived from the feature.
-
-If gstack artifacts were imported, note the lineage in the spec header:
-```markdown
-<!-- Imported from gstack: {design-doc-filename}, {test-plan-filename} -->
-```
 
 ### Step 6: Offer Next Step
 
@@ -470,14 +414,13 @@ If the user doesn't specify priorities, propose a priority assignment and get co
 
 ## Red Flags
 
-- **Never skip brainstorming (or gstack import review).** Even if the user has a clear idea, the process surfaces edge cases and constraints. In gstack import mode, the user still reviews and adjusts.
+- **Never skip brainstorming.** Even if the user has a clear idea, the process surfaces edge cases and constraints.
 - **Never generate a spec with empty Acceptance Criteria.** The verifier agent depends on these to check plan adherence.
 - **Never leave Architecture vague.** Explore the codebase and populate with specific file paths and patterns.
 - **Never save without user approval.** Show the full spec and get explicit "yes" before writing to disk.
 - **Never omit priorities.** Every requirement must have a `[P0]`/`[P1]`/`[P2]` tag.
 - **Never fabricate metric commands.** If you can't discover a mechanical metric during codebase exploration, leave the Metric/Guards/Verify Command sections empty rather than guessing. Ask the user if they know of one.
 - **Never include an untested metric command.** Always run the proposed verify command during codebase exploration. A broken metric (e.g., always returns 2 when there are 100 tests) is worse than no metric — it gives builders false confidence and prevents meaningful keep/discard iteration.
-- **Never treat gstack import as a shortcut.** Imported artifacts still need codebase exploration (Step 2) and user review. gstack provides design intent; the spec needs implementation-level detail.
 - **Never auto-generate user journeys.** User journeys must be co-created with the user. Only the user knows the expected navigation paths and product behavior. Present drafts for review, but never save without the user confirming the flows are correct.
 - **Never skip user journeys for features with UI.** If the feature has any user-facing component, user journeys are critical for catching integration issues. For API-only features, use API call sequences instead.
 - **Never prescribe implementation details for undocumented APIs or assume external API field semantics.** If you haven't verified an API works a specific way (e.g., a HID sensor's data format, a private framework's behavior), don't write it into the spec as fact. Add a spike task instead, or mark the approach as "TBD — builder must research."
