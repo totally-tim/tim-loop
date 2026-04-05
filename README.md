@@ -5,7 +5,7 @@ An automated build-verify-review development loop for [Claude Code](https://docs
 Takes a feature spec, partitions the work across parallel builders — each in their own isolated git worktree — verifies with metric-driven keep/discard iteration, merges into an integration branch, and reviews the PR. Repeats until the reviewer passes or max cycles are exhausted.
 
 ```
-/tim-spec add webhook retry logic  -->  brainstorm (or import gstack plan) + structured spec
+/tim-spec add webhook retry logic  -->  guided brainstorming + structured spec
 /tim-loop docs/specs/2026-02-28-webhook-retries.md  -->  automated loop --> PR ready
 ```
 
@@ -26,11 +26,11 @@ THE LOOP (up to 3 cycles):
                   Guard check after each merge. Identifies which merge broke what.
   3. VERIFY       Three-phase verification on integrated build:
                   Phase 1: Guard check (baseline invariants, non-negotiable).
-                  Phase 2: Feature verification (metric tracking, structured plan adherence
-                           with per-requirement evidence, interactive smoke check
-                           with quality scoring).
+                  Phase 2: Feature verification (metric tracking, live data verification,
+                           structured plan adherence with per-requirement evidence,
+                           defensive review, interactive smoke check with quality scoring).
                   Phase 3: Integration completeness (stubs, dead code, connections,
-                           user journey smoke tests in real browser).
+                           user journey smoke tests in real browser, deployment readiness).
   4. PUBLISH      Push integration branch, create/update PR with priority checklist.
   5. REVIEW       Reviewer checks PR diff against spec by priority.
                   Spec Completeness Audit: requirement-by-requirement codebase search
@@ -41,14 +41,15 @@ THE LOOP (up to 3 cycles):
   ABORT --> Per-partition state saved for resume.
 ```
 
-**Four agent roles:**
-
 | Agent | Job | Access |
 |-------|-----|--------|
 | Architect | Explore codebase, write shared contracts to integration branch, partition work into N scopes | Writes shared contracts. Shuts down after planning. |
 | Builder(s) | Implement partition with keep/discard iteration in isolated worktree | Read/write scoped to partition files in own worktree. |
-| Verifier | Three-phase verification: guards, feature checks, integration completeness (stubs, dead code, connections, user journeys) | Read-only. Cannot edit files. Operates across worktrees. |
-| Reviewer | Merge builder branches into integration, review PR diff against spec, run Spec Completeness Audit (requirement-by-requirement evidence search) | Git merge + GitHub CLI for code review. Local file reads in integration worktree for completeness audit. |
+| Verifier | Three-phase verification: guards, feature checks (including live data verification), integration completeness (stubs, dead code, connections, user journeys, deployment readiness) | Read-only. Cannot edit files. Operates across worktrees. |
+| Reviewer | Merge builder branches into integration, review PR diff against spec. Routes cross-partition fixes. | Git merge + GitHub CLI for code review. Integration worktree access. |
+| Auditor | Deep spec completeness audit: requirement-by-requirement source reading, implementation depth scoring, entry-point reachability tracing | Read-only. Spawned just-in-time for review phase. |
+
+**Five agent roles** (architect shuts down after planning, auditor spawns just-in-time for review):
 
 The orchestrator is a **thin coordinator** — it creates tasks, reads task metadata, and makes decisions. It never reads code or runs tests. Progress is visible in real time via `Ctrl+T` (task list).
 
@@ -116,6 +117,8 @@ The biggest pain point in large implementations: code passes every test but the 
 | **Dead export detection** | Components/functions built but never used | `InvoiceForm.tsx` exists but isn't rendered on any page |
 | **Connection verification** | Cross-partition seams not wired up | API endpoint exists but frontend never calls it |
 | **User journey smoke tests** | Feature unreachable through normal navigation | Invoice page exists but there's no link to it in the sidebar |
+| **Protocol consistency** | Shared interface signatures don't match implementations | Protocol has 1 param but implementation has 2 |
+| **Deployment readiness** | Build output incompatible with deploy target | `output: 'standalone'` in next.config.js but start command uses `next start` |
 
 ### User Journeys
 
@@ -150,20 +153,6 @@ The architect produces a connection map in the implementation contract, document
 ```
 
 The verifier checks each connection with targeted greps and browser verification.
-
-## gstack Integration (tim-spec)
-
-Tim-spec can import planning artifacts from [gstack](https://github.com/garrytan/gstack) as a starting point for spec generation:
-
-```
-/tim-spec add rate limiting
-```
-
-If gstack planning output exists in `~/.gstack/projects/{slug}/`:
-- Design docs (`*-design-*.md`) → Goal, Requirements, Risk Assessment
-- Test plans (`*-test-plan-*.md`) → Test Strategy, Acceptance Criteria
-
-The user reviews the extracted sections, assigns priorities, and adjusts before the spec is finalized. Brainstorming mode remains the default when no gstack artifacts exist.
 
 ### Metric-driven specs
 
@@ -244,7 +233,7 @@ claude --dangerously-skip-permissions
 - [Superpowers](https://github.com/anthropics/superpowers) plugin (provides TDD, code-review, worktree skills)
 - [`gh` CLI](https://cli.github.com/) authenticated — needed for PR creation and review
 - [Context7 MCP](https://github.com/upstash/context7) configured — agents verify library APIs against current docs
-- [playwright-cli](https://github.com/anthropics/playwright-cli) (optional) — for browser-based E2E verification
+- **Browser verification** (at least one): `mcp__claude-in-chrome__*` (preferred, native Claude MCP) or [playwright-cli](https://github.com/anthropics/playwright-cli) — required for frontend features with user journeys
 
 ## Usage
 
@@ -254,7 +243,7 @@ claude --dangerously-skip-permissions
 /tim-spec add rate limiting to the API
 ```
 
-Walks you through brainstorming (or imports gstack planning artifacts), co-creates user journeys with you, explores the codebase for architecture context, then outputs a structured spec to `docs/specs/` with prioritized requirements, user journeys, metric/guard configuration, test strategy, and risk assessment.
+Walks you through guided brainstorming, co-creates user journeys with you, explores the codebase for architecture context, verifies API data mappings for external-API features, validates the metric command, then outputs a structured spec to `docs/specs/` with prioritized requirements, user journeys, data mappings, metric/guard configuration, spike tasks, test strategy, and risk assessment.
 
 ### 2. Run the loop
 
@@ -307,9 +296,9 @@ Prevent API abuse by enforcing per-user request limits.
 - Retry-After header value matches remaining cooldown seconds
 ```
 
-Optional but recommended: `## Metric`, `## Guards`, `## Verify Command` (enable metric-driven iteration), `## User Journeys` (enable browser-based integration smoke tests).
+Optional but recommended: `## Metric`, `## Guards`, `## Verify Command` (enable metric-driven iteration), `## User Journeys` (enable browser-based integration smoke tests), `## Data Mapping` (for API-driven features), `## Spike Tasks` (verify API assumptions before building).
 
-Other optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessment`, `## Open Questions`, `## Loop Config`, `## Verification`, `## Out of Scope`.
+Other optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessment`, `## Open Questions`, `## Loop Config`, `## Verification`, `## Compiler Traps`, `## Out of Scope`.
 
 ## Key Features
 
@@ -325,10 +314,15 @@ Other optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessm
 - **Per-phase duration tracking** — TSV log includes `phase`, `duration_s`, `start_ts`, and `end_ts` columns (ISO 8601 UTC) for per-phase cost and bottleneck analysis.
 - **Scope amplification** — tim-spec asks "What would make this 10/10?" after brainstorming, proposing P1/P2 features that round out the user experience.
 - **Reviewer as integrator** — reviewer merges builder branches one at a time with guard checks after each merge. Identifies which merge broke what.
-- **gstack import** — tim-spec can consume gstack design docs and test plans as starting points. Brainstorming remains the default.
-- **Metric-driven specs** — optional `## Metric`, `## Guards`, `## Verify Command` sections enable progressive improvement tracking. Falls back to pass/fail without them.
-- **Integration completeness verification** — Phase 3 catches the "green tests, broken app" problem: stub scan, dead export detection, connection verification, and user journey smoke tests in a real browser.
-- **User journey smoke tests** — co-created with the user during spec generation. Verifier walks through each journey in a browser, taking screenshots at every checkpoint. Catches missing pages, unhooked features, and broken navigation.
+- **Metric-driven specs** — optional `## Metric`, `## Guards`, `## Verify Command` sections enable progressive improvement tracking. Falls back to pass/fail without them. Metric commands are validated during spec generation to prevent broken metrics.
+- **Data mapping verification** — for API-driven features, tim-spec verifies the semantic mapping between API fields and UI labels before generating the spec. Catches "API field doesn't mean what the label says" errors.
+- **Spike task rigor** — spike tasks now require exact query parameters, full response parsing, and field-by-field verification. No more `curl | head -c 500` truncated checks.
+- **Live data verification** — Phase 2b fetches each API route and verifies every field the UI depends on exists and is non-null. Catches "code compiles but API doesn't return expected data" failures.
+- **Integration completeness verification** — Phase 3 catches the "green tests, broken app" problem: stub scan, dead export detection, connection verification, user journey smoke tests in a real browser, protocol consistency, and deployment readiness.
+- **Deployment readiness** — Phase 3f checks that build output is compatible with the deployment target (Next.js standalone vs `next start`, Dockerfile validity, Railway/Fly config). Catches deploy-time failures before they happen.
+- **Metric sanity checking** — during baseline verification, the metric command is cross-checked against the test runner. Broken metrics (e.g., always returns 2 when there are 100 tests) are flagged before builders start.
+- **User journey smoke tests** — co-created with the user during spec generation. Verifier walks through each journey in a browser (via `mcp__claude-in-chrome__*` or `playwright-cli`), taking screenshots at every checkpoint. Catches missing pages, unhooked features, and broken navigation. **Browser verification is mandatory for frontend features** — if no browser tool is available, the build blocks with `NEEDS_HUMAN`.
+- **Cross-partition fix routing** — dead exports and connection failures that span partition boundaries route to the reviewer (who has the integration worktree) instead of to builders who can't see each other's files.
 - **Connection mapping** — architect maps every cross-partition seam (API↔UI, component↔page, route↔navigation). Verifier checks each connection during integration completeness.
 - **TSV progress log** — every builder iteration, integration result, and review outcome logged to `tim-loop-results.tsv` for observability.
 - **Architect-driven partitioning** — dedicated agent explores the codebase, writes shared contracts to disk, and splits work into N non-overlapping file scopes.
@@ -399,11 +393,12 @@ skills/
 │   ├── tim-builder.md     # Builder agent prompt + reference
 │   ├── tim-verifier.md    # Verifier agent prompt + reference
 │   ├── tim-reviewer.md    # Reviewer agent prompt + reference
+│   ├── tim-auditor.md     # Auditor agent prompt + reference
 │   ├── tim-verify.md      # Three-phase verification strategy (guard + feature + integration completeness)
 │   ├── tim-evaluation-calibration.md  # Scoring criteria, thresholds, few-shot calibration, anti-leniency
 │   └── README.md          # Detailed docs
 ├── tim-spec/
-│   └── SKILL.md           # Spec generation skill (brainstorming + gstack import)
+│   └── SKILL.md           # Spec generation skill (guided brainstorming)
 commands/
 ├── tim-loop.md            # /tim-loop slash command
 └── tim-spec.md            # /tim-spec slash command

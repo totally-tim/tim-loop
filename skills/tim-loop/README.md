@@ -71,7 +71,7 @@ Start a new Claude Code session — `/tim-spec` and `/tim-loop` will appear in a
 ### Prerequisites
 
 - **superpowers** plugin installed (provides TDD, code-review, worktree, and other skills)
-- **playwright-cli** skill at `~/.claude/skills/playwright-cli/` (for browser verification)
+- **Browser verification** (at least one): `mcp__claude-in-chrome__*` (preferred, native MCP) or **playwright-cli** skill at `~/.claude/skills/playwright-cli/`
 - **`gh` CLI** authenticated (`gh auth status`) — needed for PR creation and review
 - **Context7 MCP** configured — agents use this to verify library APIs
 
