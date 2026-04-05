@@ -150,6 +150,15 @@ Additionally, discover information for the metric sections:
 - **Metric:** Identify existing test commands, coverage tools, or measurable signals in the project.
 - **Guards:** Identify the project's typecheck, lint, test, and build commands.
 - **Verify Command:** Construct a mechanical command that extracts the metric value.
+- **Validate the metric command:** Before including the metric in the spec, run the
+  proposed verify command (or a dry-run version) and confirm:
+  1. It produces a single parseable number on stdout
+  2. The number is meaningful (e.g., for test count metrics, it should roughly match
+     the actual test count visible in test runner output)
+  3. The number will plausibly increment as work progresses
+  If the command doesn't produce useful output, either fix it or omit the
+  Metric/Verify Command sections entirely. tim-loop falls back to pass/fail mode,
+  which is better than a broken metric.
 
 Also discover information relevant to user journeys:
 - **App entry point:** What URL does the dev server serve? (e.g., `http://localhost:3000`)
@@ -166,6 +175,7 @@ assumptions before they propagate into the spec.
 **When to add spike tasks:**
 - The feature uses an undocumented or vendor-specific API (IOKit HID, private frameworks)
 - The feature depends on specific hardware behavior (sensors, peripherals, GPU)
+- The feature displays data from an external API (and the spec depends on specific fields/query params)
 - The spec prescribes a specific implementation approach for something you haven't verified
 - The feature uses a system API whose behavior varies by OS version or hardware model
 
@@ -174,6 +184,13 @@ assumptions before they propagate into the spec.
 2. For each dependency, ask: "Has this specific API surface been verified on the target platform?"
 3. If not, create a spike task that can be run before the loop starts
 4. Present spike tasks to the user: "These assumptions should be verified before building. Want to run them now?"
+
+**Spike rigor for API-dependent features:**
+For every API endpoint referenced in the spec, the spike must:
+- Use the **exact query parameters** the code will use (not simplified versions)
+- Verify that **every field the code depends on** exists in the response
+- Parse the **full response** (not truncated with `head -c 500`)
+- Test any response transformation logic (e.g., if the code will divide a value by 57.2958, verify the raw value makes sense)
 
 **If a spike can't be run** (no hardware access, no test environment):
 - Do NOT prescribe the implementation approach in the spec
@@ -200,6 +217,23 @@ iterations to be wasted on type errors rather than feature work.
 These traps are injected into every builder's prompt by tim-loop so they avoid
 burning iterations on type errors.
 
+### Step 2d: Data Mapping Verification (for API-driven features)
+
+If the feature displays data fetched from external APIs, verify the semantic mapping
+between API fields and UI labels BEFORE generating the spec.
+
+**Process:**
+1. For every UI element that displays API data, create a mapping row:
+   `UI Element → API Field → Transformation → Expected Display Value`
+2. Fetch a real API response (using the exact query the code will use)
+3. Walk through each mapping and verify: "Does this API field mean what the label says?"
+4. Flag any semantic mismatches (e.g., `icps.active` doesn't mean "propulsion active")
+
+Include the mapping table in the spec as a `## Data Mapping` section.
+
+**When to run:** Any feature that proxies or displays external API data. Skip for
+features that only use internal APIs or don't display fetched data.
+
 ### Step 3: Generate Spec
 
 Convert the brainstorming design (or gstack import) into the standardized spec format below. Every required section must be filled — if information is missing, ask the user before generating.
@@ -211,6 +245,10 @@ Ensure these sections are present and non-empty:
 - Requirements (at least one, each with a priority tag `[P0]`/`[P1]`/`[P2]`)
 - Acceptance Criteria (at least one testable criterion)
 
+If Metric and Verify Command are present: verify the command was tested during
+codebase exploration and produces a meaningful number. If not validated, warn the
+user: "The verify command hasn't been tested. Remove it or validate it now?"
+
 Recommended but not required:
 - Metric (mechanical, fast, outputs a number)
 - Guards (baseline invariants)
@@ -218,6 +256,7 @@ Recommended but not required:
 - User Journeys (end-to-end browser/API flows co-created with user)
 - Spike Tasks (for hardware/undocumented API features — strongly recommended)
 - Compiler Traps (for strict type systems — strongly recommended)
+- Data Mapping (for API-driven features — strongly recommended)
 
 ### Step 5: Save Spec
 
@@ -329,6 +368,12 @@ Each spike is a shell command or small script that confirms an API works as expe
   Command: `swift -e '...'`
   Verifies: Data format (degrees vs centidegrees, byte order, etc.)
 
+Example (API-driven features):
+- [ ] Spike: Verify orbit endpoint returns position vectors for Map View
+  Command: `curl -s "https://api.example.com/orbit" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'x' in d and 'y' in d, f'Missing XYZ fields. Available: {list(d.keys())}'"` 
+  Verifies: Response includes x, y, z fields needed for Map View positioning
+  Fallback: If fields not available, spec must document how to compute from available fields
+
 If a spike cannot be run (no hardware, no test environment), mark the corresponding
 requirement's implementation approach as "TBD — builder must research first" and
 add it to Open Questions.
@@ -351,6 +396,15 @@ Example (Rust):
 Example (TypeScript strict):
 - `strictNullChecks` means optional chaining is mandatory
 - Generic constraints must be explicit, not inferred
+
+## Data Mapping (recommended for API-driven features)
+Verified mapping between external API fields and UI display elements.
+Each row has been validated against a real API response.
+
+| UI Element | API Field | Transformation | Expected Value | Verified |
+|-----------|-----------|---------------|---------------|----------|
+| ESM Propulsion Status | `esm.thrusterState` | map to "ACTIVE"/"STANDBY" | "ACTIVE" when thrusting | Yes |
+| Earth Distance | `orbit.earthDistKm` | format with commas + " km" | "384,400 km" | Yes |
 
 ## Open Questions (optional)
 Unknowns the builder should investigate during codebase study.
@@ -422,8 +476,10 @@ If the user doesn't specify priorities, propose a priority assignment and get co
 - **Never save without user approval.** Show the full spec and get explicit "yes" before writing to disk.
 - **Never omit priorities.** Every requirement must have a `[P0]`/`[P1]`/`[P2]` tag.
 - **Never fabricate metric commands.** If you can't discover a mechanical metric during codebase exploration, leave the Metric/Guards/Verify Command sections empty rather than guessing. Ask the user if they know of one.
+- **Never include an untested metric command.** Always run the proposed verify command during codebase exploration. A broken metric (e.g., always returns 2 when there are 100 tests) is worse than no metric — it gives builders false confidence and prevents meaningful keep/discard iteration.
 - **Never treat gstack import as a shortcut.** Imported artifacts still need codebase exploration (Step 2) and user review. gstack provides design intent; the spec needs implementation-level detail.
 - **Never auto-generate user journeys.** User journeys must be co-created with the user. Only the user knows the expected navigation paths and product behavior. Present drafts for review, but never save without the user confirming the flows are correct.
 - **Never skip user journeys for features with UI.** If the feature has any user-facing component, user journeys are critical for catching integration issues. For API-only features, use API call sequences instead.
-- **Never prescribe implementation details for undocumented APIs.** If you haven't verified an API works a specific way (e.g., a HID sensor's data format, a private framework's behavior), don't write it into the spec as fact. Add a spike task instead, or mark the approach as "TBD — builder must research."
+- **Never prescribe implementation details for undocumented APIs or assume external API field semantics.** If you haven't verified an API works a specific way (e.g., a HID sensor's data format, a private framework's behavior), don't write it into the spec as fact. Add a spike task instead, or mark the approach as "TBD — builder must research."
+- **Never trust `head -c 500` or truncated output in spike tasks — always parse the full response and verify every field the code depends on.**
 - **Never skip spike tasks for hardware features.** If the spec involves hardware sensors, peripherals, or platform-specific system APIs, spike tasks are critical. Wrong assumptions propagate through the architect's contract into every builder's work.

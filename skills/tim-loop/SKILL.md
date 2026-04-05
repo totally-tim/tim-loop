@@ -269,13 +269,15 @@ TaskCreate:
       metadata: {
         baseline_failures: ['tier1/test/auth.test.ts:42', ...],
         baseline_metric: 72.3,  // or null if no metric
+        metric_sanity: 'ok',  // or 'warning: metric returned 2 but test runner reports 100 tests'
         discovery: {
           test_runner: 'vitest',
           test_command: 'npm test',
           lint_command: 'npm run lint',
           typecheck_command: 'npx tsc --noEmit',
           build_command: 'npm run build',
-          frameworks: ['vitest', 'eslint', 'typescript']
+          frameworks: ['vitest', 'eslint', 'typescript'],
+          browser_tool: 'gstack'  // or 'playwright-cli' | 'claude-in-chrome' | null
         }
       }"
   owner: verifier
@@ -284,6 +286,11 @@ TaskCreate:
 Wait for verifier to complete this task.
 
 Record the baseline, baseline_metric, AND the verifier discovery.
+
+## Surface metric warnings to user
+if baseline_task_metadata.metric_sanity starts with "warning":
+  Tell user: "Metric warning: {baseline_task_metadata.metric_sanity}. The verify command may not produce meaningful numbers. Continue with metric mode, or switch to pass/fail?"
+  ## If user says switch: set metric_mode = "pass_fail"
 
 Initialize the TSV progress log:
 
@@ -305,6 +312,11 @@ while outer_cycle <= MAX_OUTER_CYCLES:
   ## 0.5. CONTRACT NEGOTIATION (mandatory on cycle 1)
   if outer_cycle == 1:
     Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Negotiating done-contracts with builders..."
+    ## ENFORCEMENT: Contract negotiation is MANDATORY on cycle 1.
+    ## Do NOT skip this step. The Orion Dashboard retro showed that skipping
+    ## contract negotiation prevented catching semantic errors early.
+    ## If you are tempted to jump straight to BUILD, STOP. Run this step.
+
     ## For each active partition, ask the builder to propose what "done" looks like.
     ## The verifier reviews each proposal. Max 2 rounds per partition.
 
@@ -483,7 +495,9 @@ while outer_cycle <= MAX_OUTER_CYCLES:
 
       PHASE 2 — FEATURE VERIFICATION: Run Tier 1-3 checks for new functionality.
         If metric_mode == "metric": Run verify command, extract metric value.
+        Phase 2b: Live data verification (if spec has external API routes or Data Mapping).
         PLAN ADHERENCE: Check implementation against spec requirements.
+        DEFENSIVE REVIEW: Input validation, security, atomicity, data consistency.
         If Phase 2 fails → FAIL, skip Phase 3.
 
       PHASE 3 — INTEGRATION COMPLETENESS (only if Phase 1+2 pass):
@@ -496,6 +510,8 @@ while outer_cycle <= MAX_OUTER_CYCLES:
             Take screenshots at each checkpoint as evidence.
         3e. Protocol/interface consistency: verify shared protocol signatures match
             their implementations AND call sites (catches multi-partition signature drift)
+        3f. Deployment readiness: verify build output is compatible with deployment
+            target (if deployment config present — e.g., Railway, Docker, Fly)
 
       Report in task metadata: {
         verdict: "PASS"|"FAIL",
@@ -525,7 +541,16 @@ while outer_cycle <= MAX_OUTER_CYCLES:
 
     Tell user: "Cycle {outer_cycle}/{MAX_OUTER_CYCLES}: Integration verify FAIL ({prognosis}). Routing fixes..."
 
-    ## Route failure_keys to owning builders by file path. Unroutable → builder-1.
+    ## Route failure_keys to owning builders by file path.
+    ## Special case: cross-partition dead exports.
+    ## When a dead export finding (integration/dead-export/*) involves a function
+    ## in partition A's files that should be imported by partition B's files:
+    ##   - Check if the consuming file is in a different partition than the export
+    ##   - If cross-partition: route directly to the REVIEWER (who works in the
+    ##     integration worktree where all files are merged) instead of to a builder
+    ##     (who can't see the other partition's files)
+    ##   - Log: "Cross-partition dead export — routing to reviewer for integration-level fix"
+    ## Unroutable items → builder-1.
     ## Create fix tasks for each builder with failures. Builders fix in their own worktrees.
     Wait for all fix tasks to complete.
     ## Re-attempt integration (max 2 re-integration attempts per cycle).
@@ -874,7 +899,8 @@ When aborting for any reason:
          "lint_command": "npm run lint",
          "typecheck_command": "npx tsc --noEmit",
          "build_command": "npm run build",
-         "frameworks": ["vitest", "eslint", "typescript"]
+         "frameworks": ["vitest", "eslint", "typescript"],
+         "browser_tool": "gstack"
        },
        "partitions": [
          {
@@ -1020,7 +1046,7 @@ metric_mode == "metric", or a pass/fail count when metric_mode == "pass_fail".
 
 1. **Delegate everything.** Never read files, run commands, or analyze output. Agents do all work.
 2. **Tasks are the state machine.** Create tasks with dependencies, read task metadata for decisions.
-3. **Never skip phases.** ARCHITECT -> CONTRACT_NEGOTIATION (cycle 1) -> BUILD (keep/discard) -> INTEGRATE -> VERIFY (guard + feature + integration completeness) -> PUBLISH -> REVIEW. Always.
+3. **Never skip phases.** ARCHITECT -> CONTRACT_NEGOTIATION (cycle 1, MANDATORY — do NOT skip) -> BUILD (keep/discard) -> INTEGRATE -> VERIFY (guard + feature + integration completeness) -> PUBLISH -> REVIEW. Always. The Orion retro showed that skipping contract negotiation allowed semantic errors to propagate unchallenged through the entire pipeline.
 4. **Abort on NEEDS_HUMAN.** Immediately. No retries (except radical rethink for stagnant builders).
 5. **Escalate before aborting.** On builder stagnation: try radical rethink once before marking NEEDS_HUMAN.
 6. **Preserve resume state on abort.** Always write `.tim-loop-resume.json` with per-partition state and worktree paths.
@@ -1029,6 +1055,7 @@ metric_mode == "metric", or a pass/fail count when metric_mode == "pass_fail".
 9. **Guard before feature.** Guard check failures (regressions) always trigger immediate revert. Feature metric changes trigger keep/discard.
 10. **Log everything to TSV.** Every builder iteration, every integration attempt, every verification result.
 11. **Typed message filtering.** After a builder's build task is completed, suppress status/progress/idle messages from that builder. ALWAYS process escalation messages (prefixed QUESTION:, NEEDS_HUMAN:, SCOPE_CONFLICT:, CONTRACT_ISSUE:) regardless of task status. Builders remain alive — if integration fails, assign a fix task to the existing builder.
+12. **Route cross-partition integration fixes to reviewer.** Dead exports, missing imports, or connection failures that span partition boundaries go to the reviewer (who has the integration worktree), not to builders (who can only see their own partition).
 
 ## Progress Reporting
 

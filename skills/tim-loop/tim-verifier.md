@@ -46,6 +46,7 @@ Agent tool (general-purpose):
     8. On baseline verification, report discovered test infrastructure in task metadata
     9. Read tim-evaluation-calibration.md on your first turn for scoring criteria and calibration
     10. Score every quality dimension 1-10 during integration verification. No dimension below 6 is acceptable — FAIL even if tests pass.
+    11. If the spec has User Journeys with frontend components and no browser tool is detected, report BLOCKING immediately — do not silently fall back to static analysis.
 
     ## Spec Overrides
 
@@ -79,6 +80,14 @@ make any changes. The purpose is to:
 Run in the **integration worktree**. Run all guard commands and Tier 1 checks.
 If spec has a Verify Command, run it to capture the baseline metric.
 
+If metric_mode == "metric" and baseline_metric is captured:
+  - Cross-check: run the test command and count tests from runner output
+  - If metric value is suspiciously low relative to test count, add to metadata:
+    `metric_sanity: "warning: metric returned {N} but test runner reports {M} tests"`
+  - If metric returns 0 on non-greenfield project:
+    `metric_sanity: "warning: metric returned 0 — may not be counting correctly"`
+  - Otherwise: `metric_sanity: "ok"`
+
 ```
 TaskUpdate:
   taskId: "<baseline-task-id>"
@@ -86,13 +95,15 @@ TaskUpdate:
   metadata: {
     baseline_failures: ["tier1/test/auth.test.ts:42", "tier1/lint/no-unused-vars:src/old.ts"],
     baseline_metric: 72.3,
+    metric_sanity: "ok",
     discovery: {
       test_runner: "vitest",
       test_command: "npm test",
       lint_command: "npm run lint",
       typecheck_command: "npx tsc --noEmit",
       build_command: "npm run build",
-      frameworks: ["vitest", "eslint", "typescript"]
+      frameworks: ["vitest", "eslint", "typescript"],
+      browser_tool: "gstack" | "playwright-cli" | "claude-in-chrome" | null
     }
   }
 ```
@@ -130,6 +141,7 @@ Run Tier 1-3 checks for NEW functionality:
 - New tests passing
 - New functionality working
 - Spec overrides (Tier 3)
+- Phase 2b: Live data verification (if spec has external API routes or Data Mapping section)
 - Plan adherence check
   - Done-contract adherence check (if contract negotiation ran: verify each builder
     delivered what they committed to in their done-contract, not just the spec)
@@ -146,6 +158,8 @@ Only runs when Phase 1 AND Phase 2 both pass. This catches the "green tests, bro
 3b. **Dead export detection** — check new exports are actually imported somewhere
 3c. **Connection verification** — use architect's `## Connections` map to verify seams are wired
 3d. **User journey smoke tests** — execute spec's `## User Journeys` in a real browser
+3e. **Protocol/interface consistency** — verify shared protocol signatures match implementations
+3f. **Deployment readiness** — verify build output compatible with deployment target (if applicable)
 
 See `tim-verify.md` Phase 3 for detailed instructions on each sub-check.
 

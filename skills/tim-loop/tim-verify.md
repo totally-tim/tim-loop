@@ -16,6 +16,7 @@ Phase 2: FEATURE VERIFICATION (new functionality — tracked with metric)
   ├── Tier 1: typecheck + lint + NEW tests + build (always run)
   ├── Tier 2: platform-detected checks (only if Tier 1 passes)
   ├── Tier 3: spec override checks (only if Tier 1 passes)
+  ├── Phase 2b: Live data verification (API-driven features)
   ├── Plan adherence check
   ├── Defensive review (input validation, security, atomicity, data consistency)
   └── Metric extraction (if metric_mode == "metric")
@@ -25,7 +26,9 @@ Phase 3: INTEGRATION COMPLETENESS (top-down — does it work as a product?)
   ├── 3a. Stub/placeholder scan
   ├── 3b. Dead export / unreachable code detection
   ├── 3c. Connection verification (API↔UI, routes↔nav, components↔pages)
-  └── 3d. User journey smoke tests (browser-based, from spec's ## User Journeys)
+  ├── 3d. User journey smoke tests (browser-based, from spec's ## User Journeys)
+  ├── 3e. Protocol/interface consistency check
+  └── 3f. Deployment readiness check (if deployment config present)
 ```
 
 **Guard failures are non-negotiable.** They indicate a regression in existing
@@ -41,8 +44,25 @@ When running baseline verification (before builders make changes):
 - Run all guard commands on the clean worktree — record failures as baseline
 - Run Tier 1 checks — record any pre-existing failures
 - If metric_mode == "metric": run Verify Command to capture baseline metric value
+- **Metric sanity check (baseline only):** After capturing the baseline metric value,
+  validate that the metric command produces meaningful output:
+  1. If the command is supposed to count tests (contains "grep -c" or "wc -l" with test-related
+     patterns) and returns a very small number (< 5) when the test runner reports more tests,
+     flag as WARNING: "Metric command may not be counting correctly — returned {N} but test
+     runner reports {M} tests"
+  2. If the command returns 0 for a non-greenfield project with existing tests, flag as WARNING:
+     "Metric command returned 0 — verify it's counting the right thing"
+  3. Record the sanity check result in baseline task metadata:
+     `metric_sanity: "ok" | "warning: {message}"`
+  The orchestrator should surface metric warnings to the user before starting the build.
 - Do NOT run Tier 2/3 (no changes to verify yet)
-- Store results in task metadata: `{ baseline_failures: [...], baseline_metric: N }`
+- **Browser tool detection (baseline):** During baseline verification, detect whether
+  browser tools are available (check for `~/.claude/skills/gstack/`, `~/.claude/skills/playwright-cli/`,
+  or `mcp__claude-in-chrome__*` in CLAUDE.md). Record in discovery metadata:
+  `browser_tool: "gstack" | "playwright-cli" | "claude-in-chrome" | null`.
+  If the spec has `## User Journeys` with frontend components and `browser_tool` is null,
+  report immediately as a BLOCKING finding — do not wait until Phase 3d.
+- Store results in task metadata: `{ baseline_failures: [...], baseline_metric: N, metric_sanity: "ok"|"warning: ..." }`
 
 ## Phase 1: Guard Check
 
@@ -258,6 +278,39 @@ If metric_mode == "metric" and the spec has a `## Verify Command`:
    - "higher is better": metric_delta = current - baseline (positive = improvement)
    - "lower is better": metric_delta = baseline - current (positive = improvement)
 4. Include in metadata: `feature_metric`, `metric_delta`
+
+### Phase 2b: Live Data Verification (API-driven features)
+
+When the spec has API routes that proxy external data sources, or the spec has a
+`## Data Mapping` section, verify that the API actually returns the data the UI expects.
+
+**Process:**
+
+1. **Start the dev server** using the command from the spec or verifier discovery.
+2. **Fetch each API route** that proxies external data (identified from spec's Architecture
+   or Data Mapping section).
+3. **For each returned field the UI depends on:**
+   - Verify the field exists and is non-null
+   - Verify the value is within a reasonable range (e.g., distance in km should be
+     positive, angles should be -360 to 360, timestamps should be recent)
+   - If the spec has a `## Data Mapping` section, verify each mapping produces a
+     sensible display value
+4. **Flag findings:**
+   - Null/undefined field that the UI depends on → BLOCKING
+     failure_key: `tier2/live-data/{route}:{field}:null-or-missing`
+   - Value outside reasonable range → NON-BLOCKING warning
+   - Data mapping mismatch → BLOCKING
+     failure_key: `tier2/live-data/{route}:{field}:mapping-mismatch`
+
+**Skip conditions:**
+- No external API proxying (pure internal APIs) → skip
+- Dev server fails to start → log warning, skip (will be caught by Phase 3 anyway)
+- External API is unreachable (network error) → NON-BLOCKING warning
+
+**Why this exists:** The Orion Dashboard build had tests passing and guards green, but
+the orbit API didn't return XYZ position fields, the Horizons API rejected the query
+syntax, and the history API returned "unknown metric" errors. This phase catches
+"code compiles but API doesn't return expected data" failures.
 
 ### Plan Adherence Check
 
@@ -553,6 +606,36 @@ These are invisible to per-partition compilation but break at integration.
 
 **Severity:** Each protocol mismatch is a BLOCKING failure.
 
+### 3f. Deployment Readiness Check
+
+When the spec mentions deployment (e.g., "Deploy to Railway") or the project has
+deployment configuration, verify that the build output is compatible with the
+deployment target. This is a lightweight static check, not an actual deployment.
+
+**Checks:**
+
+| Signal | What to verify | How |
+|--------|---------------|-----|
+| `next.config.js` with `output: 'standalone'` | Start command is `node .next/standalone/server.js`, NOT `next start` | Read next.config.js, check if output matches expected start command in Dockerfile/Procfile/railway.json |
+| `next.config.js` without `output: 'standalone'` | `next start` is available and build produces `.next/` | Check package.json start script |
+| `Dockerfile` present | Dockerfile builds successfully (dry-run: parse for obvious errors) | Read Dockerfile, verify COPY/RUN steps reference files that exist |
+| `railway.json` or `railway.toml` present | Build and start commands are compatible | Cross-reference with package.json and framework config |
+| `Procfile` present | Process type and command are valid | Read Procfile, verify referenced commands exist |
+| `fly.toml` present | App config is valid | Read fly.toml, verify referenced paths exist |
+
+**Failure key format:** `integration/deploy/{target}:{issue}`
+
+Examples:
+- `integration/deploy/railway:standalone-with-next-start` — output: 'standalone' but start command uses `next start`
+- `integration/deploy/docker:missing-build-artifact` — Dockerfile copies a file that doesn't exist after build
+- `integration/deploy/railway:missing-start-command` — no start command configured
+
+**Severity:** Each deployment incompatibility is a BLOCKING failure.
+
+**Skip conditions:**
+- No deployment configuration detected (no Dockerfile, railway.json, Procfile, fly.toml, etc.) → skip
+- Spec doesn't mention deployment → skip
+
 ### Phase 3 Skip Conditions
 
 Phase 3 can be partially skipped when not applicable:
@@ -562,8 +645,19 @@ Phase 3 can be partially skipped when not applicable:
   (e.g., single-partition features with no cross-module wiring).
 - **3d (user journeys):** Skipped if the spec has no `## User Journeys` section.
   The verifier should note "User journeys not defined — skipping smoke tests" in the report.
+  **However:** If the spec has `## User Journeys` AND the feature has frontend components
+  (detected by changes in web UI directories like `apps/web/`, `src/pages/`, `src/components/`,
+  `src/app/`, or presence of a dev server command), browser verification is **required**.
+  If no browser tool is available (`/browse`, `playwright-cli`, or `mcp__claude-in-chrome__*`),
+  report this as a **BLOCKING** finding with:
+  - failure_key: `integration/journey/browser-tool-unavailable`
+  - prognosis: `NEEDS_HUMAN`
+  - message: "Frontend feature requires browser verification but no browser tool is available. Install /browse (gstack) or playwright-cli."
+  The orchestrator must surface this to the user immediately, not at the end of the cycle.
 - **3e (protocol consistency):** Skipped if the architect contract has no `## Shared Contracts`
   section (single-partition features). Always runs for multi-partition builds.
+- **3f (deployment readiness):** Skipped if no deployment configuration is detected AND
+  the spec doesn't mention deployment.
 
 ## Failure Key Format (all phases)
 
@@ -576,13 +670,19 @@ Phase 3 can be partially skipped when not applicable:
 | Feature | `tier1/` | build | `tier1/build/esbuild-error:src/index.ts` |
 | Feature | `tier2/` | playwright | `tier2/playwright/login-page-404` |
 | Feature | `tier3/` | spec-check | `tier3/spec-check/api-returns-wrong-status` |
+| Feature | `tier2/live-data/` | live data | `tier2/live-data/api-orbit:xyz-position:null-or-missing` |
 | Feature | `plan/` | requirement | `plan/requirement-missing:rate-limiting` |
 | Feature | `plan/` | scope-creep | `plan/scope-creep:analytics-tracking` |
+| Defensive | `defense/validation/` | input validation | `defense/validation/POST-api-invoices:missing-amount-check` |
+| Defensive | `defense/security/` | security | `defense/security/csv-injection:src/export/csv.ts:42` |
+| Defensive | `defense/atomicity/` | atomicity | `defense/atomicity/create-payroll-run:no-transaction-rollback` |
+| Defensive | `defense/consistency/` | consistency | `defense/consistency/surcharge-defaults:duplicated-in-two-files` |
 | Integration | `integration/stub/` | stub | `integration/stub/src/api/invoices.ts:42:TODO` |
 | Integration | `integration/dead-export/` | dead export | `integration/dead-export/src/components/Form.tsx:Form` |
 | Integration | `integration/connection/` | connection | `integration/connection/POST /api/invoices→Form:not-called` |
 | Integration | `integration/journey/` | journey | `integration/journey/create-invoice:2:form-not-rendered` |
 | Integration | `integration/protocol-mismatch/` | protocol | `integration/protocol-mismatch/ActionExecuting:panicRestore:sig-mismatch` |
+| Integration | `integration/deploy/` | deployment | `integration/deploy/railway:standalone-with-next-start` |
 | Guard | `guard/launch/` | launch | `guard/launch/crash-on-startup` |
 
 ## Quality Scoring
