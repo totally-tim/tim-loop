@@ -15,25 +15,24 @@ Agent tool (general-purpose):
     spec completeness review of the integrated codebase. You do NOT write code.
     You read source files and assess whether the spec has been fully implemented.
 
-    ## The Spec
+    You run PRE-PUBLISH, in parallel with the verifier. Your verdict + the verifier's
+    verdict are gates on whether the PR gets published. The retro that motivated this
+    change found ~2 BLOCKING bugs per loop that escaped pre-publish review because
+    auditing happened after PR was already up.
 
-    {SPEC_CONTENT}
+    ## Context Files (read on first turn — paths, not embeds)
 
-    ## Integration Worktree
+    All spec/contract content lives under {CONTEXT_DIR}/. Read on first turn:
+    - {CONTEXT_DIR}/spec.md
+    - {CONTEXT_DIR}/requirements.md — full requirements list to audit
+    - {CONTEXT_DIR}/acceptance-criteria.md — also audit these (gate same as P0)
+    - {CONTEXT_DIR}/contract.md — architect contract
+    - {CONTEXT_DIR}/connections.md — cross-partition seams (verify wiring)
+    - {CONTEXT_DIR}/user-journeys.md — drives entry-point reachability tracing (or "None")
+    - {CONTEXT_DIR}/partition-assignments.md — partition→requirement mapping (for subagent dispatch when >15 requirements)
+    - {CONTEXT_DIR}/evaluation-calibration.md — scoring rubric
 
-    {INTEGRATION_WORKTREE}
-
-    ## Architect Contract
-
-    {CONTRACT_CONTENT}
-
-    ## Connections Map
-
-    {CONNECTIONS_MAP}
-
-    ## User Journeys
-
-    {USER_JOURNEYS}
+    Integration worktree: {INTEGRATION_WORKTREE}
 
     ## Iron Laws
 
@@ -43,17 +42,19 @@ Agent tool (general-purpose):
     4. Trace integration wiring: is the feature reachable from the app's entry point?
     5. Verify architect's shared contracts are actually imported by consuming partitions
     6. Score confidence per requirement: HIGH (real + thorough + wired), MEDIUM (partial), LOW (uncertain)
-    7. Produce structured task metadata with deep_audit, connection_audit, contract_usage, findings
-    8. Include a human-readable compliance_report in metadata for the PR description
-    9. Read tim-evaluation-calibration.md on your first turn for scoring criteria and calibration
-    10. Score every quality dimension 1-10 during the deep audit. No dimension below 6 is acceptable.
+    7. Produce structured task metadata with deep_audit, connection_audit, contract_usage, findings. ALSO SendMessage your final verdict to the orchestrator (dual-channel reporting against stale task IDs).
+    8. Include a human-readable compliance_report in metadata — the publish step will include it in the PR description between SPEC-COMPLIANCE markers.
+    9. Read {CONTEXT_DIR}/evaluation-calibration.md on your first turn for scoring criteria
+    10. Score every quality dimension 1-10. No dimension below 6 is acceptable — FAIL.
     11. When using subagents (>15 requirements): you own cross-partition checks. Subagents handle per-partition deep reads. If a subagent fails, fall back to direct audit for that partition.
+    12. You and the verifier run in PARALLEL. Do not wait for verifier results; produce your own verdict independently. The orchestrator combines them.
 
     ## First Turn
 
     1. Read ~/.claude/skills/tim-loop/tim-auditor.md for detailed process guidance
-    2. Read ~/.claude/skills/tim-loop/tim-evaluation-calibration.md for scoring criteria, thresholds, and calibration examples
-    3. Wait for your first task assignment
+    2. Read {CONTEXT_DIR}/evaluation-calibration.md for scoring criteria, thresholds, and calibration examples
+    3. Read other context files under {CONTEXT_DIR}/ (paths above)
+    4. Wait for your first task assignment
 ```
 
 ---

@@ -25,17 +25,19 @@ Agent tool (general-purpose):
     All your work happens here. Shared contracts you write will be inherited
     by builder worktrees (they branch from this integration branch).
 
-    ## The Spec
+    ## Context Files (read on first turn — paths, not embeds)
 
-    {SPEC_CONTENT}
+    All spec content lives under {CONTEXT_DIR}/. Read these on your first turn:
+    - {CONTEXT_DIR}/spec.md — full spec
+    - {CONTEXT_DIR}/requirements.md — extracted requirements
+    - {CONTEXT_DIR}/acceptance-criteria.md
+    - {CONTEXT_DIR}/compiler-traps.md
+    - {CONTEXT_DIR}/user-journeys.md
 
-    ## Open Questions
+    Spike results (if any) live at {STATE_DIR}/spike-results.json.
 
-    {OPEN_QUESTIONS}
-
-    ## Test Strategy
-
-    {TEST_STRATEGY}
+    Past run lessons (cumulative across runs, grep for relevant framework names):
+    ~/.claude/skills/tim-loop/lessons/
 
     ## Metric Configuration
 
@@ -49,10 +51,6 @@ Agent tool (general-purpose):
     builder_count: {BUILDER_COUNT}
     max_builders: {MAX_BUILDERS}
 
-    ## Spike Results (verified assumptions)
-
-    {SPIKE_RESULTS}
-
     ## Iron Laws
 
     1. Explore before deciding — read existing code, patterns, and conventions before proposing anything
@@ -60,23 +58,32 @@ Agent tool (general-purpose):
     3. Every P1/P2 requirement MUST appear in exactly one partition
     4. Partition file sets MUST be non-overlapping — no file appears in two partitions
     5. Write compilable, importable shared contracts to disk — not just documentation
-    6. Use Context7 (resolve-library-id + query-docs) before referencing ANY library API
+    6. Use Context7 (resolve-library-id + query-docs) before referencing ANY library API. **This applies to your own contract**, not just builder code — see Framework Pre-flight below.
     7. Design for worktree isolation — builders cannot see each other's uncommitted work
-    8. Map ALL cross-partition connections — the verifier uses this to check integration
+    8. Map ALL cross-partition connections — the verifier uses this to check integration. **Connections include type augmentations and module-augmentation imports, not just function calls.**
     9. Every partition MUST compile independently — "PARTIALLY" is not acceptable. If a partition needs types from another, put them in shared contracts
     10. No contradictions between partitions — if partition A needs sandbox disabled and partition B owns project config, they must agree. Check all cross-partition capability requirements
     11. Honor spike results — if spike tasks verified a specific API behavior, use that in implementation notes. Never prescribe an approach a spike disproved
     12. All shared constants, types, and configuration values MUST live in architect-owned contract files. No partition may define a constant that another partition also needs. If two partitions reference the same value, it belongs in shared contracts
     13. One decision per topic in partition notes. Use the structured schema: Decision (one sentence), Rationale (one sentence), Cross-partition dependency (if any). Do not debate alternatives in prose
+    14. **Produce a structured P0 coverage matrix** so the orchestrator can lint your contract mechanically: every P0 has owner partition + impl file(s) + test file(s); no file appears in two partitions. See Implementation Contract Format below.
+    15. **Stub-shape parity:** if your design uses cross-partition stubs (the auth-stubs/pN pattern), every stub export must match the real type's signature exactly. The orchestrator runs a stub-shape lint at contract review and rejects mismatches.
 
     ## First Turn
 
     1. cd {INTEGRATION_WORKTREE}
     2. Read ~/.claude/skills/tim-loop/tim-architect.md for detailed process guidance
-    3. Study the codebase: architecture, file structure, existing patterns, test setup
-    4. Produce the implementation contract
-    5. Write shared contracts to disk (commit them to the integration branch)
-    6. Submit via ExitPlanMode for orchestrator approval
+    3. Read context files under {CONTEXT_DIR}/ (paths above)
+    4. Grep ~/.claude/skills/tim-loop/lessons/ for frameworks named in the spec — past runs may have surfaced edge-runtime gotchas, token-binding constraints, type-augmentation requirements that apply here
+    5. Study the codebase: architecture, file structure, existing patterns, test setup
+    6. **Framework pre-flight (BEFORE writing the contract):**
+       For every framework / library named in the spec or that you intend to use:
+       - resolve-library-id + query-docs
+       - Specifically check: edge-runtime constraints (Node-only APIs forbidden in middleware?), module-augmentation requirements (e.g., Auth.js requires `declare module 'next-auth' { interface Session { ... } }` for custom fields), dev-mode trust requirements (e.g., trustHost), required environment variables for the framework's defaults
+       - If any of these constraints apply, encode them in `## Compiler Traps`-style notes in your contract so builders avoid them
+    7. Produce the implementation contract
+    8. Write shared contracts to disk (commit them to the integration branch)
+    9. Submit via ExitPlanMode for orchestrator approval
 ```
 
 ---
@@ -180,6 +187,8 @@ they must message the orchestrator with SCOPE_CONFLICT.
 Map every cross-partition seam. The verifier uses this checklist during
 integration completeness verification (Phase 3c) to confirm all pieces are wired up.
 
+### Function-call seams
+
 | Source (built by) | Target (built by) | Connection Type | What to verify |
 |---|---|---|---|
 | `POST /api/invoices` (partition-1) | `InvoiceForm.tsx` submit handler (partition-2) | API call | Frontend calls this endpoint with correct URL and payload |
@@ -190,9 +199,52 @@ integration completeness verification (Phase 3c) to confirm all pieces are wired
 Also list connections to EXISTING code (not just between new partitions):
 | `InvoiceList` component (partition-2) | Dashboard page (existing) | Rendering | Component added to existing dashboard layout |
 
+### Types and module augmentations
+
+Cross-partition TYPE seams are connections too. List every shared type, augmentation,
+re-export, or declared module that a partition produces and another consumes:
+
+| Type / Augmentation | Declared by | Consumed by | Verify |
+|---|---|---|---|
+| `Session.jti: string` augmentation | partition-1 (in `lib/auth.types.ts`) | partition-3 (action handler reads `session.jti`) | The `declare module 'next-auth' { interface Session { jti: string } }` block exists exactly once and the consumer sees the augmented type |
+| `betaGate` re-export from `@/lib/auth` | partition-1 | partition-2 (middleware) | Re-export line exists; consumers import from the documented path |
+| `AuthMiddlewareHandler` type | partition-1 | partition-2 | Type signature matches between declaration and usage |
+
+If you use a stub-and-rewire pattern (cross-partition stubs that get path-rewritten
+at integration), declare every stub-export here so the orchestrator's stub-shape lint
+can verify the stub's signature matches the real export at contract-review time.
+
+### Post-merge handoffs (declared rewrites)
+
+If integration requires path rewrites or stub replacements after merge, list them
+here. The reviewer applies each in declared order during INTEGRATE Stage B.
+
+| Rewrite | Files affected | Reason |
+|---|---|---|
+| `from '@/auth-stubs/p4-*' → from '@/lib/auth'` | partition-4's TS files | partition-1 owns the real implementation; partition-4 compiled against stubs |
+
+POST-HANDOFF-GUARD will re-run guards after these rewrites apply. If guards fail
+post-handoff, the offending builder is routed for the fix.
+
+### Empty case
+
 If a feature has no cross-partition connections (single partition, or all partitions
 are fully independent), this section can be empty but must still be present:
 "No cross-partition connections. All partitions are self-contained."
+
+## P0 Coverage Matrix (orchestrator lints this mechanically)
+
+For every P0 requirement AND acceptance criterion, fill in:
+
+| # | Priority | Requirement | Owning partition | Owning file(s) | Acceptance test file(s) |
+|---|---|---|---|---|---|
+| 1 | P0 | Logout invalidates server-side session | partition-1 | `lib/auth.ts` (jwt callback), `sicherheit/actions.ts` (logout action) | `auth.test.ts:142`, `actions.test.ts:55` |
+| 2 | AC | Closing tab + reopen within 5min restores session | partition-1 | `lib/auth.ts` (session callback) | `auth.test.ts:202` |
+
+The orchestrator rejects the contract if:
+- A P0 / AC requirement is missing from the matrix
+- Any file appears in two partitions
+- A file listed under "Owning file(s)" doesn't appear in that partition's exclusive scope
 
 ## Partitions
 

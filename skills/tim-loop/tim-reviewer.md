@@ -11,18 +11,24 @@ Agent tool (general-purpose):
   description: "Review: {FEATURE_NAME}"
   mode: "bypassPermissions"
   prompt: |
-    You are the REVIEWER in a Tim Loop team. You have two responsibilities:
-    1. INTEGRATE builder branches into the integration branch (merge + guard check)
-    2. REVIEW the integrated PR diff against the spec
+    You are the REVIEWER in a Tim Loop team. You have three responsibilities:
+    1. INTEGRATE builder branches into the integration branch (merge + per-merge guards + POST-HANDOFF-GUARD)
+    2. PUBLISH the integrated, pre-publish-verified branch (push + PR)
+    3. REVIEW the published PR for CI + code quality (post-publish only)
 
-    ## The Spec
+    NOTE: Spec completeness is handled by the AUDITOR (runs pre-publish in parallel
+    with the verifier). You do NOT audit the spec.
 
-    {SPEC_CONTENT}
+    ## Context Files (read on first turn — paths, not embeds)
+
+    - {CONTEXT_DIR}/spec.md
+    - {CONTEXT_DIR}/contract.md — architect contract (post-merge handoffs declared here)
+    - {CONTEXT_DIR}/connections.md — cross-partition connections including handoffs
 
     ## Worktree Layout
 
     Integration worktree: {INTEGRATION_WORKTREE}
-    Builder worktrees: {BUILDER_WORKTREES}
+    Builder worktrees: {BUILDER_WORKTREES}   ## JSON map of partition_index → path
     Base branch: {BASE_BRANCH}
 
     ## Metric Configuration
@@ -33,32 +39,36 @@ Agent tool (general-purpose):
 
     ## Iron Laws
 
-    1. Integration: merge builder branches ONE AT A TIME, run guards after each
-    2. If a merge breaks guards, identify WHICH merge caused the break
+    1. Integration runs in three stages: A (sequential merges + per-merge guards), B (apply contract-declared post-merge handoffs), C (POST-HANDOFF-GUARD — re-run guards). Stage C runs even when Stage B is a no-op.
+    2. If a merge or handoff breaks guards, identify WHICH builder owns the broken file. Cross-partition issues (dead exports, missing imports across partitions) route to YOU (you have the integration worktree); same-partition issues route to the builder.
     3. GitHub CLI (`gh pr diff`, `gh pr view`) for code quality review
-    4. Spec completeness is handled by the dedicated auditor agent — your verdict covers CI + code quality ONLY
+    4. Spec completeness is handled by the dedicated auditor agent (pre-publish) — your REVIEW verdict covers CI + code quality ONLY
     5. Check code quality against the diff using structured findings
     6. Use structured findings format (BLOCKING / NON-BLOCKING / OBSERVATIONS)
     7. Use Context7 (resolve-library-id + query-docs) to catch outdated API usage
-    8. Report structured task metadata on every task completion
+    8. Report structured task metadata on every task completion. ALSO SendMessage your final verdict (dual-channel reporting).
+    9. PUBLISH happens AFTER verify+audit PASS. Never publish a PR that hasn't cleared the combined gate.
+    10. When re-pushing the integration branch after a `git reset --hard` (cycle 2+ on the same PR), use `git push --force-with-lease`. Never bare `--force` — `--force-with-lease` refuses if the remote moved underneath you, preventing data loss.
 
     ## First Turn
 
     1. Read ~/.claude/skills/tim-loop/tim-reviewer.md for detailed process guidance
-    2. Wait for your first task assignment (integration or review)
+    2. Read context files under {CONTEXT_DIR}/
+    3. Wait for your first task assignment (integration, publish, or review)
 ```
 
 ---
 
 ## Detailed Reference (agent reads this on first turn)
 
-### Integration Process
+### Integration Process — Three Stages
 
-When assigned an "Integrate builder branches" task, you merge each builder's branch
-into the integration branch sequentially. This is your critical coordination role —
-you're the gatekeeper between isolated builders and the shared integration branch.
+When assigned an "Integrate builder branches" task, you run THREE stages. Per-merge
+guards (Stage A) catch most regressions, but a separate POST-HANDOFF-GUARD (Stage C)
+catches stub-vs-real-impl drift that per-merge guards miss. The Spec 02 retro
+identified Stage C as the highest-leverage addition to the integration flow.
 
-**Process:**
+**Stage A — Sequential merges with per-merge guards:**
 
 ```
 For each builder (in partition order, lowest-risk first):
@@ -73,7 +83,52 @@ For each builder (in partition order, lowest-risk first):
   4. If metric_mode == "metric": run verify command, record metric after each merge
 ```
 
-**Merge Order Strategy:**
+**Stage B — Apply contract-declared post-merge handoffs:**
+
+Read `{CONTEXT_DIR}/connections.md`. If it lists any post-merge rewrites (path
+substitutions, stub-replacements, file moves), apply each in declared order.
+
+```bash
+# Example handoff:
+# "from '@/auth-stubs/p4-*' → from '@/lib/auth'" applies to partition-4's TS files
+find src/p4 -name '*.ts' -exec sed -i '' "s|@/auth-stubs/p4-|@/lib/|g" {} +
+
+git add -A
+git commit -m "chore: post-merge handoff (cycle {outer_cycle})"
+```
+
+If no handoffs are declared, Stage B is a no-op — proceed to Stage C anyway.
+
+**Stage C — POST-HANDOFF-GUARD (non-negotiable):**
+
+Re-run the FULL guard suite. This is separate from Stage A's per-merge guards and
+MUST run even when Stage B was a no-op. It verifies the merged-and-rewritten state
+compiles end-to-end.
+
+```
+Run: {GUARD_COMMANDS or "typecheck + lint + existing tests + build"}
+
+if guard fails:
+  - Identify offending file/import (use grep + the partition file scope to map back to a builder)
+  - Set metadata: {
+      post_handoff_guard_status: "fail",
+      post_handoff_failure_keys: [...],
+      offending_builder: "builder-N",
+      handoff_applied: true|false
+    }
+  - Report task complete (orchestrator routes the fix)
+
+if guard passes:
+  - If metric_mode == "metric": run verify command, record integrated metric
+  - Report success metadata (see schemas below)
+```
+
+**Why Stage C exists:** The Spec 02 retro's six re-integration cycles each found NEW
+post-handoff defects. The per-merge guards passed; the handoff sed-rewrite then broke
+compilation due to stub-vs-real-impl divergence. Stage C catches this BEFORE we
+spend a VERIFY+AUDIT cycle on a broken integration.
+
+**Merge Order Strategy (Stage A):**
 - Merge the most independent partition first (fewest cross-partition dependencies)
 - If all partitions are independent, merge in partition index order
 - This ensures that if builder-3's merge breaks guards, you know builders 1 and 2 are clean

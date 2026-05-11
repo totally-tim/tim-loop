@@ -27,13 +27,16 @@ Agent tool (general-purpose):
     Path: {BUILDER_WORKTREE}
     ALL your work happens in this directory. You have full isolation from other builders.
 
-    ## Implementation Contract (all builders share this)
+    ## Context Files (read on first turn — paths, not embeds)
 
-    {CONTRACT_CONTENT}
+    All shared content lives under {CONTEXT_DIR}/ — read on first turn:
+    - {CONTEXT_DIR}/spec.md — full spec
+    - {CONTEXT_DIR}/contract.md — architect's implementation contract
+    - {CONTEXT_DIR}/compiler-traps.md — framework-specific pitfalls (read FIRST)
+    - {CONTEXT_DIR}/connections.md — cross-partition seams (relevant to your handoffs)
 
-    ## The Spec (full, for reference)
-
-    {SPEC_CONTENT}
+    Done-contract: {DONE_CONTRACT}
+    (Empty when contract negotiation was skipped — proceed using the architect contract.)
 
     ## Metric Configuration
 
@@ -47,10 +50,6 @@ Agent tool (general-purpose):
     Cycle: {CYCLE_NUMBER} of {MAX_OUTER_CYCLES}
     Max iterations: {ITERATION_BUDGET}
     {PREVIOUS_FINDINGS_OR_EMPTY}
-
-    ## Compiler Traps (avoid these — they waste iterations)
-
-    {COMPILER_TRAPS}
 
     ## Partition Complexity
 
@@ -68,16 +67,18 @@ Agent tool (general-purpose):
     5. Use Context7 (resolve-library-id + query-docs) before ANY library API call
     6. Only build what's in the spec — no scope creep
     7. STAY IN YOUR LANE — only create/modify files listed in your partition scope
-    8. Use TaskCreate/TaskUpdate for ALL progress tracking
-    9. Read the Compiler Traps section above BEFORE writing any code — these are known pitfalls for this project's language/framework that will cause guard failures
+    8. Use TaskCreate/TaskUpdate for ALL progress tracking; ALSO SendMessage your final verdict (task IDs sometimes go stale — dual-channel reporting is mandatory)
+    9. Read {CONTEXT_DIR}/compiler-traps.md BEFORE writing any code
+    10. **Run the Done Self-Check before reporting your build task complete** (see "Done Self-Check" section below). A missed P0 phrase or stub-shape divergence here costs ~30K orchestration tokens later.
 
     ## First Turn
 
     1. cd {BUILDER_WORKTREE}
     2. Read ~/.claude/skills/tim-loop/tim-builder.md for detailed process guidance
-    3. Study the codebase: architecture, test patterns, relevant domains
-    4. **Review Compiler Traps above** — internalize these patterns before coding
-    5. Create sub-tasks for YOUR partition requirements, then build using keep/discard
+    3. Read context files under {CONTEXT_DIR}/ (paths above)
+    4. Study the codebase: architecture, test patterns, relevant domains
+    5. **Review {CONTEXT_DIR}/compiler-traps.md** — internalize these patterns
+    6. Create sub-tasks for YOUR partition requirements, then build using keep/discard
 ```
 
 **When partition_count == 1 (solo mode, backward compatible):**
@@ -97,13 +98,12 @@ Agent tool (general-purpose):
     Path: {BUILDER_WORKTREE}
     ALL your work happens in this directory.
 
-    ## Implementation Contract
+    ## Context Files (read on first turn — paths, not embeds)
 
-    {CONTRACT_CONTENT}
-
-    ## The Spec
-
-    {SPEC_CONTENT}
+    All shared content lives under {CONTEXT_DIR}/ — read on first turn:
+    - {CONTEXT_DIR}/spec.md
+    - {CONTEXT_DIR}/contract.md
+    - {CONTEXT_DIR}/compiler-traps.md (read FIRST)
 
     ## Metric Configuration
 
@@ -118,10 +118,6 @@ Agent tool (general-purpose):
     Max iterations: {ITERATION_BUDGET}
     {PREVIOUS_FINDINGS_OR_EMPTY}
 
-    ## Compiler Traps (avoid these — they waste iterations)
-
-    {COMPILER_TRAPS}
-
     ## Iron Laws
 
     1. ONE atomic change per iteration — if you need "and" to describe it, split it
@@ -130,16 +126,18 @@ Agent tool (general-purpose):
     4. Keep/discard based on metric direction — improved = keep, same/worse = discard (revert)
     5. Use Context7 (resolve-library-id + query-docs) before ANY library API call
     6. Only build what's in the spec — no scope creep
-    7. Use TaskCreate/TaskUpdate for ALL progress tracking
-    8. Read the Compiler Traps section above BEFORE writing any code
+    7. Use TaskCreate/TaskUpdate for ALL progress tracking; ALSO SendMessage your final verdict (dual-channel — task IDs sometimes go stale)
+    8. Read {CONTEXT_DIR}/compiler-traps.md BEFORE writing any code
+    9. **Run the Done Self-Check before reporting complete** (see section below)
 
     ## First Turn
 
     1. cd {BUILDER_WORKTREE}
     2. Read ~/.claude/skills/tim-loop/tim-builder.md for detailed process guidance
-    3. Study the codebase: architecture, test patterns, relevant domains
-    4. **Review Compiler Traps above** — internalize these patterns before coding
-    5. Create sub-tasks for your requirements, then build using keep/discard
+    3. Read context files under {CONTEXT_DIR}/
+    4. Study the codebase: architecture, test patterns, relevant domains
+    5. **Review {CONTEXT_DIR}/compiler-traps.md** — internalize these patterns
+    6. Create sub-tasks for your requirements, then build using keep/discard
 ```
 
 ---
@@ -224,6 +222,52 @@ Compare to the previous metric value:
 git revert HEAD --no-edit   # Undo the change
 ```
 The change worked (guards passed) but didn't improve the metric. Try a different approach.
+
+### Done Self-Check (run BEFORE reporting complete)
+
+Before marking your build task complete, run this lightweight self-check. The Spec 02
+retro showed that builders skipping this step missed multiple P0 phrases that the
+auditor caught downstream — each miss cost ~30K coordination tokens to recover.
+
+The check is two parts:
+
+**Part 1 — Spec-phrase grep (your assigned P0s):**
+
+For every P0 phrase your partition is assigned (from `{CONTEXT_DIR}/contract.md` under
+your partition's `## Requirements`), confirm there is a code match in your files:
+
+```bash
+# Pseudocode — adapt to your stack
+for phrase in p0_phrases:
+  # Extract 1-3 key identifiers from the requirement phrase
+  # Example: "[P0] Top bar with avatar + logout" → ["TopBar", "logout", "avatar"]
+  for key_identifier in extracted_identifiers:
+    if not grep -rnE "$key_identifier" $PARTITION_FILES:
+      flag: "P0 '{phrase}' has no apparent code match in my partition"
+```
+
+If a P0 phrase has no match: either you missed implementing it, OR the identifier
+naming diverged from the spec wording. Either way: investigate before reporting done.
+
+**Part 2 — Stub-shape parity (if your partition consumes cross-partition stubs):**
+
+Read `{CONTEXT_DIR}/connections.md` `Types and module augmentations` section. For
+every type or augmentation you consume:
+- Look up the real type signature in the architect's shared contracts
+- Compare to the stub signature you compiled against
+- If signatures diverge: flag SCOPE_CONFLICT and stop. The architect's contract review
+  should have caught this, but if it slipped through, fix it now — otherwise the
+  POST-HANDOFF-GUARD will fail and you'll be routed for the fix anyway.
+
+**Part 3 — Compiler-trap audit (your last commit):**
+
+Re-scan `{CONTEXT_DIR}/compiler-traps.md` against your final commit. Examples to look
+for: `node:crypto` imports in code that runs at the edge, missing `trustHost` in dev,
+Node-only globals in middleware. If any apply: revert + fix.
+
+Run all three parts. Only after all three pass do you mark the build task complete.
+Include `self_check: {p0_grep: "ok", stub_parity: "ok", compiler_traps: "ok"}` in
+your final task metadata.
 
 ### Iteration Logging
 
