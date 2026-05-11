@@ -12,44 +12,55 @@ Takes a feature spec, partitions the work across parallel builders — each in t
 ## How It Works
 
 ```
-SETUP: Spec --> Integration worktree --> Architect partitions work
-       --> Per-builder worktrees created --> Baseline verification (guards + metric)
+SETUP: Spec pre-flight (validate verify command, guards, paths)
+       --> Integration worktree + .tim-loop/{context,state}/ dirs
+       --> Shared context files written ONCE (read-by-path, not re-embedded)
+       --> Architect framework pre-flight (Context7 against the contract itself,
+           grep cross-run lessons for known framework gotchas)
+       --> Architect partitions work + writes contract.md to context dir
+       --> Per-builder worktrees created
+       --> Baseline verification (guards + metric, metric_sanity is a hard gate)
 
 THE LOOP (up to 3 cycles):
 
-  0.5 CONTRACT   (cycle 1 only) Builders propose done-criteria.
-                  Verifier reviews. Max 2 rounds negotiation.
+  0.5 CONTRACT    Conditional (default: if_needed). Negotiate only when spec has
+                  Open Questions affecting a partition OR a HIGH partition uses a
+                  novel library. Most loops skip this step.
   1. BUILD        N builders work in parallel, each in their own worktree.
                   Each change: commit --> guard check --> metric check --> keep or discard.
-                  Atomic iteration inspired by autoresearch.
-  2. INTEGRATE    Reviewer merges builder branches into integration, one at a time.
-                  Guard check after each merge. Identifies which merge broke what.
-  3. VERIFY       Three-phase verification on integrated build:
-                  Phase 1: Guard check (baseline invariants, non-negotiable).
-                  Phase 2: Feature verification (metric tracking, live data verification,
-                           structured plan adherence with per-requirement evidence,
-                           defensive review, interactive smoke check with quality scoring).
-                  Phase 3: Integration completeness (stubs, dead code, connections,
-                           user journey smoke tests in real browser, deployment readiness).
-  4. PUBLISH      Push integration branch, create/update PR with priority checklist.
-  5. REVIEW       Reviewer checks PR diff against spec by priority.
-                  Spec Completeness Audit: requirement-by-requirement codebase search
-                  for implementation + test evidence. Orchestrator validates audit.
+                  Before reporting done: Done Self-Check (spec-phrase grep,
+                  stub-shape parity, compiler-trap audit).
+  2. INTEGRATE    Reviewer runs three stages:
+                  A. Sequential merges + per-merge guards
+                  B. Apply contract-declared post-merge handoffs (path rewrites)
+                  C. POST-HANDOFF-GUARD — re-run guards (catches stub-vs-real drift)
+                  Monotonic-progress on re-attempts: keep going while failure count
+                  shrinks or category changes; stop on stagnation.
+  3. VERIFY+AUDIT Run in PARALLEL, both before publish:
+                  Verifier: Phase 1 (guards), Phase 2 (features + live data + plan
+                  adherence + defensive review), Phase 3 (integration completeness:
+                  stubs, dead exports, connections, user journeys, protocols, deploy).
+                  Auditor: deep source-read of every requirement + acceptance criterion,
+                  cross-partition wiring, entry-point reachability, compliance report.
+                  Combined verdict gates publish.
+  4. PUBLISH      Only after VERIFY+AUDIT pass. Push (force-with-lease for cycle 2+),
+                  create/update PR with priority checklist + compliance report.
+  5. REVIEW       Post-publish: CI + code quality only. Audit already happened.
 
-  PASS --> Done. PR ready for human review.
-  FAIL --> All agents shut down, fresh agents spawned for next cycle.
-  ABORT --> Per-partition state saved for resume.
+  PASS --> Done. Lessons artifact written. PR ready for human review.
+  FAIL --> Agents refresh, findings routed via Failure-Key Routing Matrix.
+  ABORT --> Per-partition state saved for resume (.tim-loop/state/).
 ```
 
 | Agent | Job | Access |
 |-------|-----|--------|
-| Architect | Explore codebase, write shared contracts to integration branch, partition work into N scopes | Writes shared contracts. Shuts down after planning. |
-| Builder(s) | Implement partition with keep/discard iteration in isolated worktree | Read/write scoped to partition files in own worktree. |
-| Verifier | Three-phase verification: guards, feature checks (including live data verification), integration completeness (stubs, dead code, connections, user journeys, deployment readiness) | Read-only. Cannot edit files. Operates across worktrees. |
-| Reviewer | Merge builder branches into integration, review PR diff against spec. Routes cross-partition fixes. | Git merge + GitHub CLI for code review. Integration worktree access. |
-| Auditor | Deep spec completeness audit: requirement-by-requirement source reading, implementation depth scoring, entry-point reachability tracing | Read-only. Spawned just-in-time for review phase. |
+| Architect | Explore codebase + grep cross-run lessons, run framework pre-flight via Context7 against the contract, write shared contracts, partition work into N scopes with structured P0 matrix and stub-shape parity | Writes shared contracts. Shuts down after planning. |
+| Builder(s) | Implement partition with keep/discard iteration in isolated worktree. Done Self-Check before reporting complete. | Read/write scoped to partition files in own worktree. |
+| Verifier | Three-phase verification: guards, feature checks (including live data verification), integration completeness | Read-only. Cannot edit files. Operates across worktrees. |
+| Reviewer | Three-stage INTEGRATE (per-merge guards + handoff + POST-HANDOFF-GUARD), then PUBLISH, then post-publish CI + code quality REVIEW. Routes cross-partition fixes. | Git merge + GitHub CLI. Integration worktree access. |
+| Auditor | Deep spec completeness audit — runs PRE-publish in parallel with verifier: requirement-by-requirement source reading, implementation depth scoring, entry-point reachability tracing | Read-only. Spawned just-in-time for the pre-publish verify+audit gate. |
 
-**Five agent roles** (architect shuts down after planning, auditor spawns just-in-time for review):
+**Five agent roles** (architect shuts down after planning, auditor spawns just-in-time for the pre-publish verify+audit phase):
 
 The orchestrator is a **thin coordinator** — it creates tasks, reads task metadata, and makes decisions. It never reads code or runs tests. Progress is visible in real time via `Ctrl+T` (task list).
 
@@ -302,13 +313,33 @@ Other optional sections: `## Architecture`, `## Test Strategy`, `## Risk Assessm
 
 ## Key Features
 
+### v4 (post Spec 02 — Auth retro)
+
+- **Shared context files** — spec/contract/strategy written once to `.tim-loop/context/`; agents reference via absolute path on first turn instead of embedding. Cuts spawn prompts from ~50KB to ~5KB and saves ~100-150K tokens per multi-builder cycle.
+- **Durable phase artifacts** — every phase writes a JSON to `.tim-loop/state/` (baseline.json, integrate-N.json, verify-N.json, audit-N.json, review-N.json). Survives task-ID drift; clean resume.
+- **Pre-publish audit** — auditor runs in parallel with verifier BEFORE publish. PR only goes up if both pass. Eliminates the force-push cycles that happen when post-publish auditing catches BLOCKING bugs.
+- **Conditional contract negotiation** — defaults to `if_needed`. Triggers only on (a) Open Questions affecting a specific partition or (b) HIGH-complexity partition using a library not yet in the codebase. Cuts ~80K tokens of theater on well-specified work; keeps the safety net when ambiguity actually demands it.
+- **POST-HANDOFF-GUARD** — INTEGRATE phase runs three stages: per-merge guards (A), contract-declared post-merge handoffs (B), then full guard suite re-run (C). Catches stub-vs-real-impl drift that per-merge guards miss.
+- **Monotonic-progress re-integration** — no fixed cap. Continue while progress is strict (fewer failure_keys OR changed category). Stop only on stagnation (same failure_keys two consecutive attempts). Doesn't punish productive iteration.
+- **Spec pre-flight** — orchestrator validates verify command, guards, and file references on the clean tree before any agent spawn. Hard-aborts at baseline if metric_sanity flags the verify command as broken (was advisory, now a gate).
+- **Architect framework pre-flight** — Context7 against the contract itself, not just builder code. Catches Auth.js v5 edge-split, Web Crypto vs `node:crypto`, `trustHost`-style gotchas at design time.
+- **Structured P0 coverage matrix** — architect contract includes a mechanically-lintable table mapping every P0 + acceptance criterion to its owning partition, owning file(s), and test file(s). Orchestrator rejects the contract on missing rows or duplicate file ownership.
+- **Stub-shape lint** — architect contract review verifies that cross-partition stub signatures match the corresponding real type signatures exactly. Catches the bug class that drove most of the Spec 02 retro's re-integration cycles.
+- **Types-and-augmentations connections** — connections map now distinguishes function-call seams from type/augmentation/re-export seams. Forces the architect to declare cross-partition type dependencies that grep alone would miss.
+- **Builder Done Self-Check** — before reporting complete, builders run a spec-phrase grep (every P0 phrase has a code match in their files), stub-shape parity check, and compiler-trap audit. Catches the misses that the auditor used to flag downstream.
+- **Failure-Key Routing Matrix** — explicit table in SKILL.md mapping every failure_key category to its default routing target. Removes orchestrator guesswork on fix attribution.
+- **Dual-channel reporting** — verdict-bearing tasks instruct agents to post results via BOTH TaskUpdate AND SendMessage. Protects against stale task IDs (the Spec 02 retro saw ~7 tasks return "Task not found" mid-loop).
+- **Lessons-learned artifact** — every terminal cycle writes `~/.claude/skills/tim-loop/lessons/{date}-{feature}.md`. The architect greps this directory on first turn for cumulative framework patterns across runs.
+- **Force-push hygiene** — re-pushes after cycle 2+ integration rewrites use `--force-with-lease`. Refuses if the remote moved, preventing data loss.
+
+### Core (pre-v4, still in place)
+
 - **Per-builder worktree isolation** — each builder works in their own git worktree. No cascading build errors. Unambiguous failure attribution.
 - **Keep/discard iteration** — autoresearch-style atomic commits with guard check + metric check. Keep improvements, discard regressions.
 - **Guard vs feature verification** — guards protect existing functionality (non-negotiable revert). Feature verification tracks progressive improvement.
 - **Smart stuck escalation** — 3 consecutive discards triggers a refine/pivot decision. Builder makes an explicit strategic choice before the orchestrator intervenes. Rethink uses remaining iteration budget, not a fixed 3.
 - **Scored evaluation criteria** — verifier scores functional completeness, code health, integration coherence (1-10). Auditor scores implementation depth, test thoroughness, spec fidelity (1-10). Hard threshold: no dimension below 6. Fails even if tests pass.
-- **Evaluator calibration** — centralized `tim-evaluation-calibration.md` with scoring rubrics, few-shot examples, and anti-leniency directives. Prevents the "evaluator talks itself into approving mediocre work" failure mode.
-- **Mandatory contract negotiation** — on cycle 1, builders propose done-criteria before building. Verifier reviews testability. Done-contracts are wired into verification: the verifier checks "did the builder deliver what they committed to?" not just "does the code match the spec?" Done-contracts are persisted through resume and agent refresh.
+- **Evaluator calibration** — centralized `tim-evaluation-calibration.md` with scoring rubrics, few-shot examples, and anti-leniency directives.
 - **Interactive smoke check** — after Tier 1 passes in Phase 2, verifier starts the dev server, navigates key routes, and screenshots critical states. Feeds into quality scores. Catches broken UX before full Phase 3.
 - **Adaptive iteration budget** — architect recommends per-partition iteration budgets based on complexity. Simple partitions get 4-6 iterations, complex ones get 8-12. Global cap still applies.
 - **Per-phase duration tracking** — TSV log includes `phase`, `duration_s`, `start_ts`, and `end_ts` columns (ISO 8601 UTC) for per-phase cost and bottleneck analysis.
@@ -351,11 +382,14 @@ Defaults are overridable per-spec via the `## Loop Config` section:
 |---------|---------|---------------|
 | Outer cycles | 3 | `max_outer_cycles: N` |
 | Builder iterations | 8 | `max_builder_iterations: N` |
-| Plan approval (cycle 1) | true | `require_plan_approval: false` |
+| Contract negotiation | if_needed | `contract_negotiation: off` / `if_needed` / `always` |
 | Baseline verification | true | `skip_baseline: true` |
 | Builder count | auto | `builder_count: N` or `auto` |
 | Max builders | 5 | `max_builders: N` |
 | Metric mode | auto | `metric_mode: metric` or `pass_fail` |
+
+Re-integration is governed by monotonic-progress (no fixed cap): continue while
+failure_keys count strictly decreases or category changes; stop on stagnation.
 
 ## Design Principles
 
@@ -393,15 +427,39 @@ skills/
 │   ├── tim-builder.md     # Builder agent prompt + reference
 │   ├── tim-verifier.md    # Verifier agent prompt + reference
 │   ├── tim-reviewer.md    # Reviewer agent prompt + reference
-│   ├── tim-auditor.md     # Auditor agent prompt + reference
+│   ├── tim-auditor.md     # Auditor agent prompt + reference (runs pre-publish)
 │   ├── tim-verify.md      # Three-phase verification strategy (guard + feature + integration completeness)
 │   ├── tim-evaluation-calibration.md  # Scoring criteria, thresholds, few-shot calibration, anti-leniency
+│   ├── lessons/           # Cumulative cross-run lessons (architect greps on first turn)
 │   └── README.md          # Detailed docs
 ├── tim-spec/
 │   └── SKILL.md           # Spec generation skill (guided brainstorming)
 commands/
 ├── tim-loop.md            # /tim-loop slash command
 └── tim-spec.md            # /tim-spec slash command
+```
+
+Per-run, in the integration worktree:
+```
+<integration-worktree>/.tim-loop/
+├── context/               # Read-once shared context (paths referenced from agent prompts)
+│   ├── spec.md
+│   ├── contract.md        # Architect writes here directly
+│   ├── verify-strategy.md
+│   ├── evaluation-calibration.md
+│   ├── requirements.md
+│   ├── acceptance-criteria.md
+│   ├── compiler-traps.md
+│   ├── connections.md
+│   ├── partition-assignments.md
+│   └── user-journeys.md
+├── state/                 # Per-phase artifacts (durable across task-ID drift / abort)
+│   ├── baseline.json
+│   ├── integrate-{cycle}.json
+│   ├── verify-{cycle}.json
+│   ├── audit-{cycle}.json
+│   └── review-{cycle}.json
+└── results.tsv            # Legacy progress log (kept for backward compatibility)
 ```
 
 ## License
