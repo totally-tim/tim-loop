@@ -9,14 +9,16 @@ You write a spec  -->  Worktree created  -->  Architect partitions work  -->  N 
 ```
 
 **The loop:**
-1. **BASELINE** — Verifier records pre-existing failures before building starts
-2. **ARCHITECT** — Architect analyzes the codebase, writes shared contracts, and partitions work into N non-overlapping file scopes
-3. **BUILD** — N builders work in parallel, each implementing their partition with strict TDD
-4. **VERIFY** — Independent verifier runs checks against combined output, compares against baseline
-5. **FIX** — If verify fails, failures are routed to the owning builder by file path. Per-builder stagnation detection
-6. **PUBLISH** — Code committed, pushed, PR created/updated with priority checklist from all partitions
-7. **REVIEW** — Reviewer checks CI + code quality while Auditor performs deep spec completeness review (in parallel). Cross-agent triangulation catches when grep-based evidence was fooled by stubs.
-8. If review fails, all agents are shut down and fresh agents are spawned with combined reviewer + auditor findings for the next cycle
+1. **SPEC PRE-FLIGHT** — Orchestrator validates verify command, guards, and file references on the clean tree before any agent spawns. Hard-aborts if the spec is broken.
+2. **BASELINE** — Verifier records pre-existing failures and runs the verify command for sanity (hard-abort if metric is wonky).
+3. **ARCHITECT** — Architect analyzes the codebase + past run lessons, runs a framework pre-flight via Context7 against its own contract (catches edge-runtime gotchas, missing augmentations), then partitions work into N non-overlapping file scopes. Contract is mechanically linted for P0 coverage and stub-shape parity.
+4. **CONTRACT NEGOTIATION (conditional)** — only runs when triggers fire (Open Questions affecting a partition, OR HIGH-complexity partition using novel libraries). Default off-by-trigger.
+5. **BUILD** — N builders work in parallel, each implementing their partition with strict TDD. Builder runs a Done Self-Check (spec-phrase grep, stub-shape parity, compiler-trap audit) before reporting complete.
+6. **INTEGRATE** — Reviewer merges builder branches (Stage A: per-merge guards), applies contract-declared post-merge handoffs (Stage B), then runs POST-HANDOFF-GUARD (Stage C) to catch stub-vs-real-impl drift. Monotonic-progress check on re-attempts.
+7. **VERIFY + AUDIT (parallel, PRE-publish)** — Verifier runs Phase 1+2+3; Auditor performs deep source-read in parallel. Combined verdict gates publish. Cross-agent triangulation catches when grep-based evidence was fooled by stubs.
+8. **PUBLISH (only if VERIFY+AUDIT pass)** — Push (force-with-lease for re-publishes), PR created/updated with priority checklist and compliance report.
+9. **REVIEW (post-publish, CI + code quality only)** — Reviewer waits for CI, checks code quality. Audit already happened pre-publish.
+10. If review fails, agents refresh with findings for the next cycle. On success, write lessons artifact for cumulative learning.
 
 **Five agent roles:**
 - **Architect** — explores codebase, creates implementation contract with shared types and partitions, shuts down after planning
@@ -27,12 +29,20 @@ You write a spec  -->  Worktree created  -->  Architect partitions work  -->  N 
 
 The orchestrator coordinates via a shared task list (`Ctrl+T` to see progress) — it never reads code or runs tests.
 
-## Key Features (v3 — Builder Swarm + Deep Audit)
+## Key Features (v4 — Pre-Publish Audit + Token Reduction)
 
+- **Shared context files** — spec/contract/strategy written once to `.tim-loop/context/`; agents reference via path instead of embedding. ~100-150K token savings per cycle on multi-builder runs.
+- **Durable phase artifacts** — every phase writes a JSON to `.tim-loop/state/` (baseline.json, integrate-N.json, verify-N.json, audit-N.json, review-N.json). Survives task-ID drift, enables clean resume.
+- **Conditional contract negotiation** — defaults to `if_needed` (negotiate only when Open Questions affect a partition or HIGH-complexity partition uses novel libraries). Avoids ~80K tokens of theater on well-specified work.
+- **POST-HANDOFF-GUARD** — separate guard run after sed/path-rewrite handoffs to catch stub-vs-real-impl drift that per-merge guards miss.
+- **Monotonic-progress re-integration** — no fixed cap. Continue while progress is strict (fewer failure_keys OR changed category). Stop only on stagnation.
+- **Pre-publish audit** — auditor runs in parallel with verifier BEFORE publish. PR only goes up if both pass. Eliminates force-push cycles caused by post-publish BLOCKING findings.
+- **Spec pre-flight** — orchestrator validates verify command, guards, and file references on clean tree before any agent spawn. Hard-aborts if metric is broken (was advisory, now a gate).
+- **Architect framework pre-flight** — Context7 against the contract itself, not just builder code. Catches Auth.js edge-split, Web Crypto, trustHost-style gotchas at design time.
+- **Lessons-learned artifact** — every terminal cycle writes `~/.claude/skills/tim-loop/lessons/{date}-{feature}.md`. Architect greps these on first turn for cumulative framework patterns.
 - **Parallel builders** — architect partitions work across N builders with non-overlapping file scopes. Each builder gets a focused context window.
-- **Architect agent** — dedicated agent explores the codebase, writes shared types/interfaces to disk, and creates an implementation contract before builders start.
-- **Deep spec audit** — dedicated auditor agent reads actual source files (not just grep) to classify implementations as REAL/STUB/MISSING and tests as THOROUGH/SHALLOW/MISSING, with per-requirement confidence scoring (HIGH/MEDIUM/LOW).
-- **Parallel review** — reviewer (CI + code quality) and auditor (spec completeness) run simultaneously. Both must pass. Zero added wall-clock time.
+- **Architect agent** — dedicated agent explores the codebase, writes shared types/interfaces to disk, and creates an implementation contract with structured P0 coverage matrix and stub-shape parity declarations.
+- **Deep spec audit** — auditor reads actual source files (not just grep) to classify implementations as REAL/STUB/MISSING and tests as THOROUGH/SHALLOW/MISSING, with per-requirement confidence scoring.
 - **Cross-agent triangulation** — orchestrator compares the verifier's grep-based evidence with the auditor's source-reading assessment. Disagreements (verifier says IMPLEMENTED, auditor says STUB) become high-priority findings.
 - **Contract usage verification** — auditor verifies that the architect's shared types/interfaces are actually imported by consuming partitions.
 - **Entry-point reachability tracing** — auditor traces new features from the app's entry point through routing and navigation to catch orphaned components that pass tests but are invisible to users.

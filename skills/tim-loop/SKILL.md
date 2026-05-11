@@ -1222,13 +1222,18 @@ When aborting for any reason:
 
 2. **Preserve work and state:**
    - The worktree branches are NOT deleted
-   - Write a resume state file to the integration worktree root:
+   - The `.tim-loop/state/` directory already contains the per-phase artifacts
+     (baseline.json, integrate-N.json, verify-N.json, audit-N.json, review-N.json).
+     On resume, the orchestrator reads these instead of re-running phases.
+   - Write a top-level resume pointer at `.tim-loop-resume.json` (in the integration
+     worktree root, NOT inside .tim-loop/) so the resume command can find the
+     loop without traversing:
      ```json
-     // .tim-loop-resume.json
+     // .tim-loop-resume.json — pointer file, durable detail is under .tim-loop/state/
      {
        "team_name": "tim-loop-{feature-slug}",
        "spec_path": "/path/to/spec.md",
-       "contract_path": ".tim-loop-contract.md",
+       "loop_dir": "/path/to/integration/.tim-loop",
        "base_branch": "main",
        "integration_worktree": "/path/to/integration",
        "builder_worktrees": {
