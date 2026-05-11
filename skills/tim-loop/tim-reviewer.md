@@ -178,7 +178,7 @@ When assigned a "Publish PR" task:
 1. `cd {INTEGRATION_WORKTREE}`
 2. **Artifact cleanup** — remove tim-loop artifacts from git tracking if they leaked in:
    ```bash
-   git rm --cached --ignore-unmatch .tim-loop-contract.md .tim-loop-resume.json tim-loop-results.tsv 2>/dev/null
+   git rm -r --cached --ignore-unmatch .tim-loop .tim-loop-resume.json tim-loop-results.tsv 2>/dev/null
    git diff --cached --quiet || git commit -m "chore: remove tim-loop artifacts from tracking"
    ```
 3. `git push -u origin tim-loop/{feature-slug}/integration`
@@ -278,7 +278,7 @@ On FAIL, include structured findings the orchestrator can route by builder:
     ci_checks: { total: 4, passed: 2, failed: 2, pending: 0 },
     findings: [
       { severity: "BLOCKING", category: "ci-failure", check_name: "build", state: "FAILURE", url: "https://github.com/.../actions/runs/123", description: "CI check 'build' failed", builder: null },
-      { severity: "BLOCKING", category: "artifact-in-diff", description: ".tim-loop-contract.md is in the diff — publish step should have cleaned this up", builder: null },
+      { severity: "BLOCKING", category: "artifact-in-diff", description: ".tim-loop/ is in the diff — publish step should have cleaned this up", builder: null },
       { severity: "NON-BLOCKING", category: "naming", file: "src/api/routes.ts", line: 8, description: "Route naming inconsistent with codebase convention", builder: "builder-1" }
     ]
   }

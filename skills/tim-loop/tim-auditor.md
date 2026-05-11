@@ -190,7 +190,7 @@ requires seeing across partition boundaries — only the auditor has the full pi
 
 ### Contract Usage Verification
 
-Read the architect's contract (`.tim-loop-contract.md`) in the integration worktree.
+Read the architect's contract at `{CONTEXT_DIR}/contract.md`.
 
 For each shared type, interface, or utility listed in the contract's `## Shared Contracts` section:
 1. Identify which partitions the contract says should consume it (from `## Partitions`)

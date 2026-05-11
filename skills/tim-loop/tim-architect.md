@@ -82,8 +82,9 @@ Agent tool (general-purpose):
        - Specifically check: edge-runtime constraints (Node-only APIs forbidden in middleware?), module-augmentation requirements (e.g., Auth.js requires `declare module 'next-auth' { interface Session { ... } }` for custom fields), dev-mode trust requirements (e.g., trustHost), required environment variables for the framework's defaults
        - If any of these constraints apply, encode them in `## Compiler Traps`-style notes in your contract so builders avoid them
     7. Produce the implementation contract
-    8. Write shared contracts to disk (commit them to the integration branch)
-    9. Submit via ExitPlanMode for orchestrator approval
+    8. Write the contract to `{CONTEXT_DIR}/contract.md` (single source of truth — do NOT also write a copy to the integration worktree root)
+    9. Write shared types/interfaces (the importable ones builders compile against) to the codebase paths defined in the contract, and commit them to the integration branch
+    10. Submit via ExitPlanMode for orchestrator approval
 ```
 
 ---
@@ -152,13 +153,13 @@ Agent tool (general-purpose):
    - The verifier uses this map in Phase 3c to confirm everything is wired up
 
 5. **Contract Document**
-   - Write the implementation contract to `.tim-loop-contract.md` in the integration worktree root
+   - Write the implementation contract to `{CONTEXT_DIR}/contract.md` (single source of truth — the orchestrator extracts connections and partition assignments from this file)
    - Must include `## Connections` section (even if empty for single-partition features)
    - Submit via ExitPlanMode for orchestrator approval
 
 ### Implementation Contract Format
 
-The contract written to `.tim-loop-contract.md` MUST follow this structure:
+The contract written to `{CONTEXT_DIR}/contract.md` MUST follow this structure:
 
 ```markdown
 # Implementation Contract: {FEATURE_NAME}
@@ -344,7 +345,7 @@ Do NOT trust training data for type definitions, method signatures, or config op
 
 ### Communication Protocol
 
-**Primary output:** The implementation contract file (`.tim-loop-contract.md`) + shared contract files on disk.
+**Primary output:** The implementation contract file (`{CONTEXT_DIR}/contract.md`) + shared contract files on disk.
 
 **Submit via ExitPlanMode:** When contract is ready, submit for orchestrator approval.
 

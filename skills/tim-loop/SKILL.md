@@ -33,7 +33,6 @@ run tests, analyze diffs, or generate fix suggestions. Agents do all real work.
 | BUILDER_COUNT | auto | `builder_count` |
 | MAX_BUILDERS | 5 | `max_builders` |
 | METRIC_MODE | auto | `metric_mode` |
-| MAX_REINTEGRATION_ATTEMPTS | monotonic | `max_reintegration_attempts` |
 
 `builder_count: auto` means the architect agent decides based on codebase analysis.
 Set to an integer to force a specific number of builders.
@@ -55,11 +54,11 @@ negotiation entirely allowed semantic errors to propagate. `if_needed` is the
 reconciliation: negotiate when the spec or partition complexity genuinely demands
 disambiguation; skip when the architect's contract already does the work.
 
-`MAX_REINTEGRATION_ATTEMPTS` modes:
-- `monotonic` (default): keep re-integrating as long as each attempt strictly reduces
-  failure_keys count OR changes failure category (typecheck → build → runtime). Stop
-  when two consecutive attempts produce the same failure_keys (no progress).
-- A positive integer (e.g. `3`): legacy fixed cap.
+Re-integration is governed by **monotonic-progress** (no configurable cap): keep
+re-integrating as long as each attempt strictly reduces failure_keys count OR
+changes failure category (typecheck → build → runtime). Stop when two consecutive
+attempts produce the same failure_keys (no progress). This replaces the previous
+fixed-cap rule from earlier skill versions.
 
 ## SETUP Phase
 
@@ -112,13 +111,15 @@ git worktree add <worktree-base>/integration -b tim-loop/{feature-slug}/integrat
 WORKTREE_GITDIR=$(sed 's/^gitdir: //' < <integration-worktree>/.git)
 mkdir -p "$WORKTREE_GITDIR/info"
 echo '.tim-loop/' >> "$WORKTREE_GITDIR/info/exclude"
-echo '.tim-loop-contract.md' >> "$WORKTREE_GITDIR/info/exclude"
 echo '.tim-loop-resume.json' >> "$WORKTREE_GITDIR/info/exclude"
 echo 'tim-loop-results.tsv' >> "$WORKTREE_GITDIR/info/exclude"
 
 # Create the loop directory layout
 mkdir -p <integration-worktree>/.tim-loop/context
 mkdir -p <integration-worktree>/.tim-loop/state
+
+# Ensure the cross-run lessons directory exists (used by architect pre-flight)
+mkdir -p ~/.claude/skills/tim-loop/lessons
 ```
 
 Record the `base_branch` (the branch HEAD was on before worktree creation).
@@ -133,7 +134,7 @@ Builder worktrees are created LATER in Step 5b, after the architect defines part
 <integration-worktree>/.tim-loop/
   context/
     spec.md                     # full spec content
-    contract.md                 # symlink/copy of .tim-loop-contract.md (after architect)
+    contract.md                 # architect writes here directly (single source of truth)
     verify-strategy.md          # tim-verify.md content
     evaluation-calibration.md   # tim-evaluation-calibration.md content
     requirements.md             # extracted ## Requirements section
@@ -239,7 +240,7 @@ write $CONTEXT_DIR/user-journeys.md         (## User Journeys section, or "None"
 ```
 
 Files derived later (after architect phase) are written in Step 5b:
-- `contract.md` — symlink or copy of the architect's `.tim-loop-contract.md`
+- `contract.md` — architect writes here directly (single source of truth)
 - `connections.md` — extracted `## Connections` section from contract
 - `partition-assignments.md` — partition→requirement mapping
 
@@ -333,13 +334,13 @@ based on verified behavior, not assumptions.
      subject: "Produce implementation contract for {FEATURE_NAME}"
      description: |
        Study the codebase and the spec. Produce an implementation contract:
-       - Write shared types/interfaces to disk (compilable, importable)
+       - Write shared types/interfaces to disk in the codebase (compilable, importable)
        - Define naming conventions, error handling patterns, test patterns
        - Create N partitions with non-overlapping file ownership
        - Map every spec requirement to exactly one partition
        - Builder count: {BUILDER_COUNT} (auto = you decide; integer = exact count)
        - Max builders: {MAX_BUILDERS}
-       Write the contract to .tim-loop-contract.md in the worktree root.
+       Write the contract to {CONTEXT_DIR}/contract.md (single source of truth).
        Submit via ExitPlanMode for orchestrator approval.
      owner: architect
    ```
@@ -377,13 +378,16 @@ based on verified behavior, not assumptions.
    - `partition.iteration_budget = min(parsed_value, MAX_BUILDER_ITERATIONS)`
    - If not specified: `partition.iteration_budget = MAX_BUILDER_ITERATIONS`
 
-   **Write contract artifacts to context dir** (do this BEFORE spawning builders so
-   they can read on first turn):
+   **Single source of truth for the contract: `$CONTEXT_DIR/contract.md`.**
+   The architect writes the contract directly to this path (see its First Turn step 8).
+   The orchestrator extracts derived files from it:
    ```bash
-   cp <integration-worktree>/.tim-loop-contract.md $CONTEXT_DIR/contract.md
    write $CONTEXT_DIR/connections.md         (extracted ## Connections section)
    write $CONTEXT_DIR/partition-assignments.md  (formatted partition→requirement map)
    ```
+   On cycle 2+ (architect re-spawn after REFRESH_AGENTS, if ever needed), the
+   architect MUST overwrite `$CONTEXT_DIR/contract.md` in place — the orchestrator
+   then re-extracts `connections.md` and `partition-assignments.md` from it.
 
    **Stub-shape lint** (before approving contract): For every shared contract file
    the architect wrote, check that any per-partition stubs reference the same exports
@@ -518,9 +522,16 @@ while outer_cycle <= MAX_OUTER_CYCLES:
   elif CONTRACT_NEGOTIATION == "if_needed" and outer_cycle == 1:
     ## Trigger 1: Open Questions in the spec that affect a partition.
     if spec has non-empty ## Open Questions:
-      ## Match each open question against partition file scopes. If any question
-      ## references files/topics owned by a specific partition, that partition needs
-      ## negotiation.
+      ## match_question_to_partition(question, partitions):
+      ##   1. Tokenize the question for filenames, function names, route paths,
+      ##      and library/framework names (anything matching `[A-Z][a-zA-Z0-9]*` or
+      ##      `/[a-z][a-z0-9/_-]+` or `[a-z][a-z-]+\.[a-z]+`).
+      ##   2. For each token, check whether it appears in any partition's
+      ##      file scope, requirement text, or implementation notes.
+      ##   3. Return the first matching partition (deterministic by partition_index)
+      ##      or None if no partition matches.
+      ## A question that doesn't match any partition is treated as project-wide
+      ## and does NOT trigger negotiation (architect should have answered it).
       for question in open_questions:
         owning_partition = match_question_to_partition(question, partitions)
         if owning_partition:
@@ -528,12 +539,15 @@ while outer_cycle <= MAX_OUTER_CYCLES:
           negotiation_reasons.append(f"open question '{question[:60]}' affects {owning_partition.name}")
 
     ## Trigger 2: HIGH partition using a novel framework/pattern.
-    ## Novel = the architect contract's implementation notes reference a library or
-    ## pattern not already used in the existing codebase (e.g., Auth.js v5 in a repo
-    ## that has no prior auth library). The orchestrator detects this by comparing
-    ## the contract's listed libraries against `package.json` (or equivalent) in the
-    ## integration worktree. New library names that don't already appear as direct
-    ## dependencies count as novel.
+    ## detect_novel_libraries(partition, integration_worktree):
+    ##   1. Parse partition.implementation_notes for library names — match
+    ##      `from ['"]([@a-z][a-z0-9/_-]+)['"]` import patterns and explicit
+    ##      mentions like `using <library>` / `via <library>`.
+    ##   2. Read package.json / Cargo.toml / pyproject.toml / go.mod /
+    ##      Package.swift in the integration worktree.
+    ##   3. A library is "novel" iff it appears in implementation_notes but NOT
+    ##      in dependencies / devDependencies (or equivalent for the language).
+    ##   4. Return the list of novel library names (empty list if none).
     for partition in partitions:
       if partition.complexity == "HIGH":
         novel = detect_novel_libraries(partition, integration_worktree)
@@ -756,8 +770,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
   ## Monotonic-progress re-integration loop
   ##
   ## Track failure_keys across re-integration attempts within this cycle.
-  ## Default mode = "monotonic": continue while progress is strict; stop on stagnation.
-  ## If MAX_REINTEGRATION_ATTEMPTS is an integer: use it as a fixed cap (legacy).
+  ## Continue while progress is strict; stop on stagnation.
 
   reintegration_history = []  ## list of {attempt, failure_keys_set, category}
   attempt = 0
@@ -766,14 +779,19 @@ while outer_cycle <= MAX_OUTER_CYCLES:
     reintegration_history.append({
       attempt: attempt,
       failure_keys_set: set(current_failure_keys),
-      category: classify(current_failure_keys)  ## "typecheck" | "build" | "test" | "runtime"
+      ## category classification:
+      ##   guard/typecheck/*   → "typecheck"
+      ##   guard/lint/*        → "lint"
+      ##   guard/build/*       → "build"
+      ##   guard/test/*        → "test"
+      ##   guard/launch/*      → "launch"
+      ##   tier*/test/*        → "test"
+      ##   integration/*       → "integration"
+      ##   anything else       → "runtime"
+      category: highest_severity_category_among(current_failure_keys)
     })
 
-    if MAX_REINTEGRATION_ATTEMPTS is an integer and attempt >= MAX_REINTEGRATION_ATTEMPTS:
-      Tell user: f"Hit fixed re-integration cap ({MAX_REINTEGRATION_ATTEMPTS}). Proceeding to VERIFY with known issues."
-      break
-
-    if MAX_REINTEGRATION_ATTEMPTS == "monotonic" and attempt >= 2:
+    if attempt >= 2:
       prev = reintegration_history[-2]
       curr = reintegration_history[-1]
       if prev.failure_keys_set == curr.failure_keys_set:
@@ -1010,8 +1028,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
       Remove tim-loop artifacts from git tracking if they leaked in:
       ```bash
       cd {INTEGRATION_WORKTREE}
-      git rm --cached --ignore-unmatch .tim-loop-contract.md .tim-loop-resume.json tim-loop-results.tsv 2>/dev/null
-      # The .tim-loop/ directory is git-excluded so nothing inside it should be staged.
+      git rm -r --cached --ignore-unmatch .tim-loop .tim-loop-resume.json tim-loop-results.tsv 2>/dev/null
       git diff --cached --quiet || git commit -m "chore: remove tim-loop artifacts from tracking"
       ```
 
@@ -1069,7 +1086,7 @@ while outer_cycle <= MAX_OUTER_CYCLES:
 
       Verify no tim-loop artifacts leaked into the diff:
       ```bash
-      gh pr diff {PR_NUMBER} | grep -q '\.tim-loop-contract\.md\|\.tim-loop-resume\.json\|tim-loop-results\.tsv\|\.tim-loop/'
+      gh pr diff {PR_NUMBER} | grep -q '\.tim-loop/\|\.tim-loop-resume\.json\|tim-loop-results\.tsv'
       ```
       If any match: BLOCKING finding (category: "artifact-in-diff", description: "{filename} is in the diff — the publish step should have cleaned this up").
 
@@ -1099,7 +1116,8 @@ while outer_cycle <= MAX_OUTER_CYCLES:
   write $STATE_DIR/review-{outer_cycle}.json (reviewer metadata)
 
   ## Final verdict — at this point VERIFY+AUDIT have already PASSED pre-publish.
-  ## REVIEW only judges CI + post-publish code quality.
+  ## REVIEW only judges CI + post-publish code quality. Quality-score gating
+  ## happened pre-publish; no need to re-check here.
   combined_findings = reviewer_findings
 
   if reviewer_verdict == "PASS":
